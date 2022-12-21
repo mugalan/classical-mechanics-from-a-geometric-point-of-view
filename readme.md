@@ -4,5 +4,8 @@ They have been the source for the undergraduate courses ME211, ME320, ME301, ME3
 
 D. H. S. Maithripala, PhD.
 
+smaithri@eng.pdn.ac.lk
+
 https://eng.pdn.ac.lk/ME/People/FacultyProfiles.php?id=6
+
 https://orcid.org/0000-0002-8200-2696
