@@ -285,8 +285,7 @@ rb.animated_cube_flat_shading(frames, "Rigid Body RK4 Demo")
 
 ## 🧰 Troubleshooting
 
-- **Duplicate method name**: Remove one `add_orth_norm_frame` definition.
-- **Name error in Euler stepper**: Rename `r_from_quaternionsns` → `r_from_quaternions`.
+
 - **Plotly not showing in some environments**: Ensure you run in a notebook or a context that can open the renderer (`fig.show()`).
 - **Sympy imports**: If unused in your minimal scripts, you can comment/remove to reduce startup overhead.
 
