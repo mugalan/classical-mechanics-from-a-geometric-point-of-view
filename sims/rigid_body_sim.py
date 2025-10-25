@@ -181,7 +181,7 @@ class RigidBodySim:
         '''
         if np.linalg.norm(omega) >= 0.0001:
             nomega = omega / np.linalg.norm(omega)
-            thetaomegat = dt * np.linalg.norm(omega)
+            thetaomegat = np.linalg.norm(omega)
             qomegat = np.concatenate(([np.cos(thetaomegat/2)], np.sin(thetaomegat/2) * nomega))
             R = self.r_from_quaternions(qomegat)
         return R
