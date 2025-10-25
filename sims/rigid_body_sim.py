@@ -851,3 +851,46 @@ class RigidBodySim:
             XX0=XXi;
             rotatedVertices+=[[XX0]];
         return rotatedVertices
+
+    def LinearSystemModel(self, X, t, A):
+        """
+        Represents a linear dynamic system model.
+
+        This function defines the evolution of a linear system over time using the
+        state-space representation. It calculates the time derivative of the state
+        vector \( X \) given the system matrix \( A \).
+
+        Args:
+            X (numpy.ndarray): A \( n \times 1 \) matrix (or list/array of \( n \) elements)
+                            representing the state vector of the system.
+            t (float): Time variable (not used in the calculation but required for compatibility
+                    with ODE solvers).
+            A (numpy.ndarray): A \( n \times n \) matrix representing the system matrix that defines
+                            the linear dynamics.
+
+        Returns:
+            numpy.ndarray: The time derivative of the state vector \( dX/dt \), computed as \( A \cdot X \).
+
+        Formula:
+            The system is modeled as:
+            \[
+            \frac{dX}{dt} = A \cdot X
+            \]
+
+        Example:
+            Input:
+            X = [1, 2]
+            t = 0  # Time (not used in this example)
+            A = [[0, 1], [-1, -2]]  # System matrix
+
+            Output:
+            [-2, -5]  # Time derivative of the state vector
+
+        Notes:
+            - Ensure the dimensions of \( A \) and \( X \) are consistent (\( A \) should be square and
+            \( X \) should have the appropriate size).
+            - Commonly used in simulations of linear systems such as control systems and electrical circuits.
+        """
+        # Compute the time derivative of the state vector using the system matrix
+        dXdt = A @ X
+        return dXdt        
