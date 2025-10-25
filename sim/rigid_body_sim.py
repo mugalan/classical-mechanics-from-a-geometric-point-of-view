@@ -282,69 +282,6 @@ class RigidBodySim:
         # Apply the rotation and translation to the object vertices
         return o + R @ object_vertices
 
-    def add_orth_norm_frame(self, fig, o, R, axis_range, axis_color):
-        """
-        Adds an orthonormal frame to a 3D Plotly figure, representing the axes of a rotated frame.
-
-        This method visualizes a rotated orthonormal frame in a 3D plot. The frame is defined
-        by its origin and a rotation matrix, and it is represented by three arrows indicating
-        the rotated \( x \)-axis, \( y \)-axis, and \( z \)-axis.
-
-        Args:
-            fig (plotly.graph_objects.Figure): The 3D figure to which the frame will be added.
-            o (numpy.ndarray): A \(3 \times 1\) matrix (or list/array of 3 elements) representing
-                              the origin of the frame in 3D space.
-            R (numpy.ndarray): A \(3 \times 3\) rotation matrix defining the orientation of the frame.
-            axis_range (list of tuples): Specifies the range for each axis in the format
-                                        [(x_min, x_max), (y_min, y_max), (z_min, z_max)].
-            axis_color (str): Color for the axis lines in the frame (e.g., "red", "blue", "green").
-
-        Returns:
-            plotly.graph_objects.Figure: The input figure with the added orthonormal frame.
-
-        Example:
-            Input:
-            fig = go.Figure()  # Empty 3D figure
-            o = [0, 0, 0]  # Origin at (0, 0, 0)
-            R = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]  # 90-degree rotation about z-axis
-            axis_range = [(-1, 1), (-1, 1), (-1, 1)]
-            axis_color = "blue"
-
-            Output:
-            A 3D figure with the rotated frame visualized.
-
-        Notes:
-            - Each axis of the frame is scaled based on the rotation matrix \( R \).
-            - The figure layout is updated to match the specified axis range and ensure aspect ratio consistency.
-        """
-        # Define the standard basis vectors for the x, y, and z axes
-        e = [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])]
-
-        # Apply the rotation matrix R to each e-frame axis to compute the rotated b-frame axes
-        b = [R @ ei for ei in e]
-
-        # Add each axis as a line starting at origin `o` and extending in the rotated direction
-        for bi in b:
-            fig.add_trace(go.Scatter3d(
-                x=[o[0], o[0] + bi[0]],  # Line along the rotated axis
-                y=[o[1], o[1] + bi[1]],
-                z=[o[2], o[2] + bi[2]],
-                hoverinfo='x+y+z',  # Tooltip displays the 3D coordinates
-                mode='lines',  # Display as lines
-                line=dict(width=8, color=axis_color)  # Line styling
-            ))
-
-        # Update the layout to fix the axis ranges and maintain aspect ratio
-        fig.update_layout(
-            showlegend=False,  # Hide legend
-            scene=dict(
-                xaxis=dict(range=axis_range[0], autorange=False),
-                yaxis=dict(range=axis_range[1], autorange=False),
-                zaxis=dict(range=axis_range[2], autorange=False),
-                aspectratio=dict(x=1, y=1, z=1)  # Keep the aspect ratio uniform
-            )
-        )
-        return fig
 
     def add_orth_norm_frame(self, fig, o, R, axis_range, axis_color):
         """
@@ -842,7 +779,7 @@ class RigidBodySim:
                 nomega = omega / np.linalg.norm(omega)
                 thetaomegat = dt * np.linalg.norm(omega)
                 qomegat = np.concatenate(([np.cos(thetaomegat/2)], np.sin(thetaomegat/2) * nomega))
-                R = self.r_from_quaternionsns(qomegat) @ R
+                R = self.r_from_quaternions(qomegat) @ R
 
             o += dt * doto
             spi += dt * dspi
