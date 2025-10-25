@@ -8,15 +8,53 @@ version = "0.1.0"
 requires-python = ">=3.9"
 description = "A simple class for rigid body simulations."
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }
 authors = [{ name = "Mugalan", email = "mugalan@gmail.com" }]
+
+# Core runtime dependencies used by your class
 dependencies = [
   "numpy>=2.0",
-  "pandas>=2.0,<3.0",
+  "scipy>=1.10",
+  "sympy>=1.12",
   "plotly>=5,<6",
-  "simdkalman==1.0.2",
-  "matplotlib>=3.7"
+  "pandas>=2.0,<3.0",
+  "matplotlib>=3.7",
+  "simdkalman==1.0.2"
 ]
 
-packages = ["sim"]
-include  = ["README.md", "LICENSE"]
+# Optional groups (install with: pip install .[dev])
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "black>=24.3",
+  "mypy>=1.10",
+  "hatch>=1.12"
+]
+
+[project.urls]
+Homepage = "https://github.com/<you>/<repo>"
+Repository = "https://github.com/<you>/<repo>.git"
+Issues = "https://github.com/<you>/<repo>/issues"
+
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering",
+]
+
+# Package discovery / build config for Hatchling
+[tool.hatch.build.targets.wheel]
+packages = ["sims"]
+
+[tool.hatch.build]
+include = [
+  "README.md",
+  "LICENSE"
+]
