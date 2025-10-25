@@ -296,14 +296,25 @@ class LDSValueError(ValueError): ...
 
 class LinearGaussianSystemSyms:
     """
-    Discrete-time linear Gaussian system:
-        x_k = A_k x_{k-1} + w_{k-1},   w_{k-1} ~ N(0, Σ_p)
-        y_k = H_k x_k       + z_k,     z_k     ~ N(0, Σ_m)
+    Discrete-time linear Gaussian system (time-invariant here):
+        x_k = A x_{k-1} + G w_{k-1},   w_{k-1} ~ N(0, Σ_p)
+        y_k = H x_k       + z_k,       z_k     ~ N(0, Σ_m)
+
+    Parameters
+    ----------
+    A : (n,n)
+    H : (p,n)
+    Sigma_p :  (n,n) if G is None   OR   (r,r) if G is provided (G has shape (n,r))
+    Sigma_m : (p,p)
+    G : None or (n,r), optional
+    x0 : (n,), optional
+    rng : np.random.Generator or seed
     """
 
-    def __init__(self, A, H, Sigma_p, Sigma_m, x0=None, rng=None):
+    def __init__(self, A, H, Sigma_p, Sigma_m, x0=None, rng=None, G=None):
         self.A = self._as_2d(A, "A")
         self.H = self._as_2d(H, "H")
+        self.G = None if G is None else self._as_2d(G, "G")
         self.Sigma_p = self._as_2d(Sigma_p, "Sigma_p")
         self.Sigma_m = self._as_2d(Sigma_m, "Sigma_m")
 
@@ -315,27 +326,51 @@ class LinearGaussianSystemSyms:
             raise LDSShapeError(f"`A` must be (n,n); got {self.A.shape}.")
         if self.H.shape[1] != n:
             raise LDSShapeError(f"`H` must be (p,n) with n={n}; got {self.H.shape}.")
-        if self.Sigma_p.shape != (n, n):
-            raise LDSShapeError(f"`Sigma_p` must be (n,n); got {self.Sigma_p.shape}.")
+
+        if self.G is None:
+            # Σ_p is already in state space
+            if self.Sigma_p.shape != (n, n):
+                raise LDSShapeError(f"With G=None, `Sigma_p` must be (n,n)={(n,n)}; got {self.Sigma_p.shape}.")
+        else:
+            # Σ_p is in w-space (r,r)
+            r = self.G.shape[1]
+            if self.Sigma_p.shape != (r, r):
+                raise LDSShapeError(f"With G of shape {(n,r)}, `Sigma_p` must be (r,r)={(r,r)}; got {self.Sigma_p.shape}.")
+
         if self.Sigma_m.shape != (p, p):
             raise LDSShapeError(f"`Sigma_m` must be (p,p); got {self.Sigma_m.shape}.")
 
-        # Symmetry + SPD
+        # Symmetry + SPD (for sampling and numerical sanity)
         self._assert_symmetric(self.Sigma_p, "Sigma_p")
         self._assert_symmetric(self.Sigma_m, "Sigma_m")
-        self.Lp = self._assert_spd(self.Sigma_p, "Sigma_p")  # Cholesky factors for sampling
+        self.Lw = self._assert_spd(self.Sigma_p, "Sigma_p")  # Cholesky for w (or state if G=None)
         self.Lm = self._assert_spd(self.Sigma_m, "Sigma_m")
 
         self.n, self.p = n, p
+        self.r = None if self.G is None else self.G.shape[1]
         self.rng = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
         self.x = self._as_1d(x0, "x0") if x0 is not None else np.zeros(n)
+
+    # ---------- convenience ----------
+
+    def process_cov_state(self):
+        """Return Q_state = Cov(noise in state space) = Σ_p (if G=None) else G Σ_p G^T."""
+        if self.G is None:
+            return self.Sigma_p
+        return self.G @ self.Sigma_p @ self.G.T
 
     # ---------- stepping ----------
 
     def step_state(self):
-        """x_k = A x_{k-1} + w_{k-1}  (returns x_k)"""
-        w = self.Lp @ self.rng.standard_normal(self.n)
-        self.x = self.A @ self.x + w
+        """x_k = A x_{k-1} + (G w_{k-1} or w_{k-1} if G=None). Returns x_k."""
+        if self.G is None:
+            # w is in state space (n,)
+            w = self.Lw @ self.rng.standard_normal(self.n)
+            self.x = self.A @ self.x + w
+        else:
+            # w is in w-space (r,)
+            w = self.Lw @ self.rng.standard_normal(self.r)
+            self.x = self.A @ self.x + self.G @ w
         return self.x
 
     def step_measurement(self, x=None):
@@ -389,6 +424,8 @@ class LinearGaussianSystemSyms:
         except np.linalg.LinAlgError as e:
             raise LDSValueError(f"`{name}` must be symmetric positive definite (SPD). Cholesky failed: {e}")
 
+    # ---------- visuals / demos (updated to use G when present) ----------
+
     def animate_measurement_gaussians_scalar(
         self,
         *,
@@ -409,9 +446,9 @@ class LinearGaussianSystemSyms:
 
         A = np.asarray(self.A, float)
         H = np.asarray(self.H, float).reshape(1, -1)    # (1,n)
-        Q = np.asarray(self.Sigma_p, float)
+        Qs = np.asarray(self.process_cov_state(), float)
         Rm = np.asarray(self.Sigma_m, float)
-        R_scalar = float(np.atleast_2d(Rm)[0, 0])       # already a Python float
+        R_scalar = float(np.atleast_2d(Rm)[0, 0])
 
         n = self.n
 
@@ -442,22 +479,22 @@ class LinearGaussianSystemSyms:
         for k in range(T):
             # Predict
             m_pred = A @ m
-            P_pred = A @ P @ A.T + Q
+            P_pred = A @ P @ A.T + Qs
 
             # Predictive y ~ N(H m^-, H P^- H^T + R)
-            mu_pred[k] = (H @ m_pred).item()                      # <-- .item()
-            S_pred = (H @ P_pred @ H.T).item() + R_scalar         # <-- .item()
+            mu_pred[k] = (H @ m_pred).item()
+            S_pred = (H @ P_pred @ H.T).item() + R_scalar
             sig_pred[k] = float(np.sqrt(S_pred)) if S_pred > 0 else 0.0
 
             # Update with robust KF
             m, P, _, _ = kf.measurement_update(m_pred, P_pred, H, np.array([Y[k]]), np.array([[R_scalar]]))
 
             # Posterior-predictive y ~ N(H m, H P H^T + R)
-            mu_post[k] = (H @ m).item()                           # <-- .item()
-            S_post = (H @ P @ H.T).item() + R_scalar              # <-- .item()
+            mu_post[k] = (H @ m).item()
+            S_post = (H @ P @ H.T).item() + R_scalar
             sig_post[k] = float(np.sqrt(S_post)) if S_post > 0 else 0.0
 
-        # ---- plotting (unchanged except uses mu_* / sig_* arrays) ----
+        # ---- plotting (unchanged logic) ----
         def _gauss_pdf(x, mu, sigma):
             if sigma <= 0:
                 return np.zeros_like(x)
@@ -488,11 +525,11 @@ class LinearGaussianSystemSyms:
                     name=str(k),
                     data=[
                         go.Scatter(x=xgrid, y=y_pred_pdf, mode="lines",
-                                name="Predictive p(y_k|Y_{k-1})", showlegend=False),
+                                   name="Predictive p(y_k|Y_{k-1})", showlegend=False),
                         go.Scatter(x=xgrid, y=y_post_pdf, mode="lines",
-                                name="Posterior p(y_k|Y_k)", showlegend=False),
+                                   name="Posterior p(y_k|Y_k)", showlegend=False),
                         go.Scatter(x=[Y[k]], y=[ymax*0.9], mode="markers",
-                                name=f"observed {component_label}_k", showlegend=False, marker=dict(size=8)),
+                                   name=f"observed {component_label}_k", showlegend=False, marker=dict(size=8)),
                     ],
                     layout=go.Layout(
                         annotations=[
@@ -500,7 +537,7 @@ class LinearGaussianSystemSyms:
                                 x=0.98, y=0.95, xref="paper", yref="paper",
                                 xanchor="right", yanchor="top",
                                 text=(f"k={k} | μ⁻={mu_pred[k]:.3f}, σ⁻={sig_pred[k]:.3f} "
-                                    f"| μ={mu_post[k]:.3f}, σ={sig_post[k]:.3f}"),
+                                      f"| μ={mu_post[k]:.3f}, σ={sig_post[k]:.3f}"),
                                 showarrow=False, font=dict(size=12)
                             )
                         ]
@@ -517,7 +554,7 @@ class LinearGaussianSystemSyms:
                 go.Scatter(x=xgrid, y=y_pred_pdf0, mode="lines", name="Predictive p(y_k|Y_{k-1})"),
                 go.Scatter(x=xgrid, y=y_post_pdf0, mode="lines", name="Posterior p(y_k|Y_k)"),
                 go.Scatter(x=[Y[0]], y=[ymax0*0.9], mode="markers",
-                        name=f"observed {component_label}_k", marker=dict(size=8)),
+                           name=f"observed {component_label}_k", marker=dict(size=8)),
             ],
             layout=go.Layout(
                 title="Scalar KF: Predictive vs Posterior-Predictive Measurement Gaussians",
@@ -532,11 +569,11 @@ class LinearGaussianSystemSyms:
                         x=0.0, y=1.15, xanchor="left", yanchor="top",
                         buttons=[
                             dict(label="Play", method="animate",
-                                args=[None, {"frame": {"duration": frame_ms, "redraw": True},
-                                            "transition": {"duration": 0},
-                                            "fromcurrent": True}]),
+                                 args=[None, {"frame": {"duration": frame_ms, "redraw": True},
+                                              "transition": {"duration": 0},
+                                              "fromcurrent": True}]),
                             dict(label="Pause", method="animate",
-                                args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                 args=[[None], {"frame": {"duration": 0, "redraw": False},
                                                 "mode": "immediate",
                                                 "transition": {"duration": 0}}]),
                         ],
@@ -549,8 +586,8 @@ class LinearGaussianSystemSyms:
                         currentvalue=dict(prefix="k = ", visible=True, xanchor="right"),
                         steps=[dict(method="animate",
                                     args=[[str(k)], {"mode": "immediate",
-                                                    "frame": {"duration": 0, "redraw": True},
-                                                    "transition": {"duration": 0}}],
+                                                     "frame": {"duration": 0, "redraw": True},
+                                                     "transition": {"duration": 0}}],
                                     label=str(k)) for k in range(T)]
                     )
                 ],
@@ -560,32 +597,15 @@ class LinearGaussianSystemSyms:
 
         if save_html_path:
             fig.write_html(save_html_path, include_plotlyjs="cdn", auto_play=auto_play)
-
         if show:
             fig.show()
         if return_fig:
             return fig
 
     def plot_y(self, Y, *, nbins=40, component_labels=None,
-                        curve_samples=500, show=True, return_fig=False):
+               curve_samples=500, show=True, return_fig=False):
         """
         Plot all measurement components y[:, j] together in one figure as scatter traces.
-
-        Parameters
-        ----------
-        Y : array_like, shape (T, p)
-            Collected measurements over T steps.
-        nbins, curve_samples : kept for API compatibility (not used).
-        component_labels : list[str] | None
-            Optional labels per y-dimension; defaults to ['y[0]', ..., 'y[p-1]'].
-        show : bool, default True
-            Call fig.show().
-        return_fig : bool, default False
-            If True, return the plotly Figure.
-
-        Returns
-        -------
-        fig : plotly.graph_objects.Figure (only if return_fig=True)
         """
         Y = np.asarray(Y, dtype=float)
         if Y.ndim != 2:
@@ -598,12 +618,10 @@ class LinearGaussianSystemSyms:
         t = np.arange(T)
 
         fig = go.Figure()
-
         for j in range(p):
             yj = Y[:, j]
             mask = np.isfinite(yj)
             if not np.any(mask):
-                # If a component has no finite points, annotate and skip
                 continue
             fig.add_trace(
                 go.Scatter(
@@ -615,16 +633,11 @@ class LinearGaussianSystemSyms:
                     hovertemplate="k=%{x}<br>y=%{y:.4g}<extra>" + labels[j] + "</extra>",
                 )
             )
-
         fig.update_layout(
             title="Measurement Traces (all y components)",
             template="plotly_white",
             height=420 if p <= 3 else 480,
-            legend=dict(
-                orientation="v",
-                x=1.02, xanchor="left",
-                y=0.5,  yanchor="middle",
-            ),
+            legend=dict(orientation="v", x=1.02, xanchor="left", y=0.5, yanchor="middle"),
             margin=dict(r=160),
         )
         fig.update_xaxes(title_text="time step (k)")
@@ -634,7 +647,6 @@ class LinearGaussianSystemSyms:
             fig.show()
         if return_fig:
             return fig
-
 
     def filter_with_kf_and_plot(
         self,
@@ -653,22 +665,11 @@ class LinearGaussianSystemSyms:
         """
         Run a Kalman filter over provided (or simulated) measurements and plot:
           (1) y_k (noisy) vs filtered estimate H m_k  [time series]
-          (2) residual Gaussians ONLY (no histograms):
-              - Gaussian Approx. (MLE mu/sigma from residuals e_k = y_k - H m_k)
-              - Modeled Noise Gaussian N(0, diag(Sigma_m))
-
-        Returns
-        -------
-        M : ndarray, shape (T, n)
-            Filtered means m_k for k=1..T.
-        Yhat : ndarray, shape (T, p)
-            Filtered measurement estimates H m_k.
-        (fig_ts, fig_gauss) : Figures if return_fig=True
+          (2) residual Gaussians ONLY (no histograms)
         """
-        # ----- validate / prepare inputs -----
         A = np.asarray(self.A, float)
         H = np.asarray(self.H, float)
-        Q = np.asarray(self.Sigma_p, float)
+        Q = np.asarray(self.Sigma_p, float)   # w-space if G is set; state-space otherwise
         R = np.asarray(self.Sigma_m, float)
         n, p = self.n, self.p
 
@@ -697,9 +698,8 @@ class LinearGaussianSystemSyms:
         Yhat = np.zeros((T, p))
 
         for k in range(T):
-            # Predict
-            m_pred = A @ m
-            P_pred = A @ P @ A.T + Q
+            # Predict (uses G if present; otherwise treats Q in state space)
+            m_pred, P_pred = kf.predict(m, P, A, Q, G=self.G)
 
             # Update
             m, P, _, _ = kf.measurement_update(m_pred, P_pred, H, Y[k], R)
@@ -711,7 +711,7 @@ class LinearGaussianSystemSyms:
         # Residuals (posterior): e_k = y_k - H m_k
         E = Y - Yhat  # shape (T, p)
 
-        # ----- plot (1): time series y vs Hm -----
+        # ----- plot (1): time series -----
         labels = component_labels or [f"y[{j}]" for j in range(p)]
         t = np.arange(T)
         fig_ts = make_subplots(rows=p, cols=1, shared_xaxes=True,
@@ -719,20 +719,13 @@ class LinearGaussianSystemSyms:
 
         for j in range(p):
             fig_ts.add_trace(
-                go.Scatter(
-                    x=t, y=Y[:, j],
-                    mode="markers",
-                    name=f"{labels[j]} noisy",
-                    marker=dict(size=5),
-                ),
+                go.Scatter(x=t, y=Y[:, j], mode="markers",
+                           name=f"{labels[j]} noisy", marker=dict(size=5)),
                 row=j+1, col=1
             )
             fig_ts.add_trace(
-                go.Scatter(
-                    x=t, y=Yhat[:, j],
-                    mode="lines",
-                    name=f"{labels[j]} filtered (H m)",
-                ),
+                go.Scatter(x=t, y=Yhat[:, j], mode="lines",
+                           name=f"{labels[j]} filtered (H m)"),
                 row=j+1, col=1
             )
             fig_ts.update_yaxes(title_text=labels[j], row=j+1, col=1)
@@ -742,11 +735,7 @@ class LinearGaussianSystemSyms:
             title="Measurements vs. KF Filtered Estimates (H m_k)",
             template="plotly_white",
             height=max(300, 260 * p),
-            legend=dict(
-                orientation="v",
-                x=1.02, xanchor="left",
-                y=0.5,  yanchor="middle",
-            ),
+            legend=dict(orientation="v", x=1.02, xanchor="left", y=0.5, yanchor="middle"),
             margin=dict(r=140),
         )
 
@@ -764,17 +753,13 @@ class LinearGaussianSystemSyms:
         for j in range(p):
             ej_raw = E[:, j]
             ej = ej_raw[np.isfinite(ej_raw)]
-            # Sample-based parameters (MLE)
             mu_hat = float(np.mean(ej)) if ej.size else 0.0
             sigma_hat = float(np.std(ej, ddof=0)) if ej.size else 0.0
-            # Modeled marginal std from R (diagonal)
             sigma_model = float(np.sqrt(max(R[j, j], 0.0)))
 
-            # x-range covering both curves; ensure a minimum width
             span = max(1e-6, 4.0 * sigma_hat, 4.0 * sigma_model, np.ptp(ej) if ej.size > 1 else 0.0)
             center = mu_hat
-            lo = center - 0.5 * span
-            hi = center + 0.5 * span
+            lo, hi = center - 0.5 * span, center + 0.5 * span
             if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
                 lo, hi = -1.0, 1.0
 
@@ -783,21 +768,15 @@ class LinearGaussianSystemSyms:
             pdf_model = _gauss_pdf(xgrid, 0.0, sigma_model)
 
             fig_gauss.add_trace(
-                go.Scatter(
-                    x=xgrid, y=pdf_hat,
-                    mode="lines",
-                    name=f"{labels[j]} Gaussian Approx (μ̂={mu_hat:.3g}, σ̂={sigma_hat:.3g})",
-                    hovertemplate="x=%{x:.4g}<br>pdf=%{y:.4g}<extra></extra>",
-                ),
+                go.Scatter(x=xgrid, y=pdf_hat, mode="lines",
+                           name=f"{labels[j]} Gaussian Approx (μ̂={mu_hat:.3g}, σ̂={sigma_hat:.3g})",
+                           hovertemplate="x=%{x:.4g}<br>pdf=%{y:.4g}<extra></extra>"),
                 row=j+1, col=1
             )
             fig_gauss.add_trace(
-                go.Scatter(
-                    x=xgrid, y=pdf_model,
-                    mode="lines",
-                    name=f"{labels[j]} Modeled N(0, R_jj) (σ={sigma_model:.3g})",
-                    hovertemplate="x=%{x:.4g}<br>pdf=%{y:.4g}<extra></extra>",
-                ),
+                go.Scatter(x=xgrid, y=pdf_model, mode="lines",
+                           name=f"{labels[j]} Modeled N(0, R_jj) (σ={sigma_model:.3g})",
+                           hovertemplate="x=%{x:.4g}<br>pdf=%{y:.4g}<extra></extra>"),
                 row=j+1, col=1
             )
 
@@ -808,11 +787,7 @@ class LinearGaussianSystemSyms:
             title="Residual Gaussian Fits (Sample MLE vs. Modeled Noise)",
             template="plotly_white",
             height=max(300, 260 * p),
-            legend=dict(
-                orientation="v",
-                x=1.02, xanchor="left",
-                y=0.5,  yanchor="middle",
-            ),
+            legend=dict(orientation="v", x=1.02, xanchor="left", y=0.5, yanchor="middle"),
             margin=dict(r=240),
         )
 
