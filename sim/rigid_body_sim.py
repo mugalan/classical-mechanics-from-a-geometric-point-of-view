@@ -13,7 +13,7 @@ init_vprinting(pretty_print=True)
 import plotly.graph_objects as go
 
 
-class MugasRigidBodyFunctions:
+class RigidBodySim:
 
     def __init__(self):
         pass
