@@ -11,32 +11,7 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Mugalan", email = "mugalan@gmail.com" }]
 
-# Core runtime dependencies used by your class
-dependencies = [
-  "numpy>=2.0",
-  "scipy>=1.10",
-  "sympy>=1.12",
-  "plotly>=5,<6",
-  "pandas>=2.0,<3.0",
-  "matplotlib>=3.7",
-  "simdkalman==1.0.2"
-]
-
-# Optional groups (install with: pip install .[dev])
-[project.optional-dependencies]
-dev = [
-  "pytest>=8",
-  "ruff>=0.6",
-  "black>=24.3",
-  "mypy>=1.10",
-  "hatch>=1.12"
-]
-
-[project.urls]
-Homepage = "https://github.com/<you>/<repo>"
-Repository = "https://github.com/<you>/<repo>.git"
-Issues = "https://github.com/<you>/<repo>/issues"
-
+# Put classifiers INSIDE [project]
 classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
@@ -49,12 +24,37 @@ classifiers = [
   "Topic :: Scientific/Engineering",
 ]
 
-# Package discovery / build config for Hatchling
+# Runtime deps your class actually imports
+dependencies = [
+  "numpy>=2.0",
+  "scipy>=1.10",
+  "sympy>=1.12",
+  "plotly>=5,<6",
+  "pandas>=2.0,<3.0",
+  "matplotlib>=3.7",
+  "simdkalman==1.0.2"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "black>=24.3",
+  "mypy>=1.10",
+  "hatch>=1.12"
+]
+
+[project.urls]
+Repository = "https://github.com/mugalan/classical-mechanics-from-a-geometric-point-of-view.git"
+
+
+# Hatchling build config
 [tool.hatch.build.targets.wheel]
 packages = ["sims"]
 
-[tool.hatch.build]
+[tool.hatch.build.targets.sdist]
 include = [
-  "README.md",
-  "LICENSE"
+  "sims/**",
+  "README.md"
 ]
+
