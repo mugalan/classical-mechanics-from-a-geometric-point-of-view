@@ -46,7 +46,6 @@ class RigidBodySim:
             [-x[1], x[0],  0.]
         ])
 
-
     def q_from_axis_angles(self, theta, unit_axis):
         """
         Computes a quaternion from a given rotation angle and unit axis.
@@ -83,7 +82,6 @@ class RigidBodySim:
 
         # Combine scalar and vector parts into a single quaternion
         return np.concatenate(([scalar_part], three_by_one_matrix_part))
-
 
     def r_from_quaternions(self, q):
         """
@@ -130,7 +128,6 @@ class RigidBodySim:
             2 * self.hat_matrix(w) @ self.hat_matrix(w)
         )
 
-
     def rotation_matrix_2_euler_angles(self, R):
         """
         Converts a \(3 \times 3\) rotation matrix into its corresponding Euler angles.
@@ -176,6 +173,18 @@ class RigidBodySim:
         # Gimbal lock: theta = 0
         phi = math.atan2(R[0, 1], R[0, 0])  # Rotation about z-axis
         return phi, 0, 0
+
+    def exp_map(self, omega):
+        '''
+        Computes the exponential of omega using the Euler-Rodrigues formula
+        \exp(\omega)\in SO(3)
+        '''
+        if np.linalg.norm(omega) >= 0.0001:
+            nomega = omega / np.linalg.norm(omega)
+            thetaomegat = dt * np.linalg.norm(omega)
+            qomegat = np.concatenate(([np.cos(thetaomegat/2)], np.sin(thetaomegat/2) * nomega))
+            R = self.r_from_quaternions(qomegat)
+        return R
 
     def re3_equals_gamma(self, gamma):
         """
@@ -236,7 +245,6 @@ class RigidBodySim:
         # Construct the quaternion and compute the rotation matrix
         return self.r_from_quaternions(self.q_from_axis_angles(theta, n))
 
-
     def rotate_and_translate(self, object_vertices, R, o):
         """
         Applies a rotation and translation to a set of object vertices.
@@ -281,7 +289,6 @@ class RigidBodySim:
 
         # Apply the rotation and translation to the object vertices
         return o + R @ object_vertices
-
 
     def add_orth_norm_frame(self, fig, o, R, axis_range, axis_color):
         """
@@ -518,7 +525,6 @@ class RigidBodySim:
         # Return computed quantities
         return [thetaomega, nomega, doto, dp, dspi, dXc]
 
-
     def animate_2D_scatter_plot(self, x, YY, xlabel, ylabel, title):
         """
         Creates an animated 2D scatter plot using Plotly.
@@ -581,7 +587,6 @@ class RigidBodySim:
 
         # Return the figure object (can be displayed using fig.show())
         return fig
-
 
     def simulate_dy_system(self, dynamic_system_model, t_max, dt, x0, sys_para, fig_title, x_label, y_label):
         """
@@ -702,7 +707,6 @@ class RigidBodySim:
         dXdt = A @ X
         return dXdt
 
-
     def cube_vertices(self, cube_dimensions):
         l, w, h = cube_dimensions['l'], cube_dimensions['w'], cube_dimensions['h']
         xp, yp, zp = cube_dimensions['xp'], cube_dimensions['yp'], cube_dimensions['zp']
@@ -757,7 +761,6 @@ class RigidBodySim:
         len(fig.frames)
         fig.show()
         return fig
-
 
     def eulers_method(self, dt, Tmax, parameters, ICs):
         M, II = parameters['M'], parameters['II']
@@ -833,7 +836,6 @@ class RigidBodySim:
         X1 = [[R1, X[0][1] + dtk * doto1], omega1, p1, X[3] + dtk * dXc1]
         return X1
 
-
     def simulating_a_cube(self, dt, Tmax, cubeDimensions, parameters,ICs):
         XX=self.cube_vertices(cubeDimensions);
 
@@ -852,45 +854,4 @@ class RigidBodySim:
             rotatedVertices+=[[XX0]];
         return rotatedVertices
 
-    def LinearSystemModel(self, X, t, A):
-        """
-        Represents a linear dynamic system model.
 
-        This function defines the evolution of a linear system over time using the
-        state-space representation. It calculates the time derivative of the state
-        vector \( X \) given the system matrix \( A \).
-
-        Args:
-            X (numpy.ndarray): A \( n \times 1 \) matrix (or list/array of \( n \) elements)
-                            representing the state vector of the system.
-            t (float): Time variable (not used in the calculation but required for compatibility
-                    with ODE solvers).
-            A (numpy.ndarray): A \( n \times n \) matrix representing the system matrix that defines
-                            the linear dynamics.
-
-        Returns:
-            numpy.ndarray: The time derivative of the state vector \( dX/dt \), computed as \( A \cdot X \).
-
-        Formula:
-            The system is modeled as:
-            \[
-            \frac{dX}{dt} = A \cdot X
-            \]
-
-        Example:
-            Input:
-            X = [1, 2]
-            t = 0  # Time (not used in this example)
-            A = [[0, 1], [-1, -2]]  # System matrix
-
-            Output:
-            [-2, -5]  # Time derivative of the state vector
-
-        Notes:
-            - Ensure the dimensions of \( A \) and \( X \) are consistent (\( A \) should be square and
-            \( X \) should have the appropriate size).
-            - Commonly used in simulations of linear systems such as control systems and electrical circuits.
-        """
-        # Compute the time derivative of the state vector using the system matrix
-        dXdt = A @ X
-        return dXdt        
