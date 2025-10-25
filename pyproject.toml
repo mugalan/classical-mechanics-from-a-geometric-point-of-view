@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rigid-body-sim"
+version = "0.1.0"
+requires-python = ">=3.9"
+description = "A simple class for rigid body simulations."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{ name = "Mugalan", email = "mugalan@gmail.com" }]
+dependencies = [
+  "numpy>=2.0",
+  "pandas>=2.0,<3.0",
+  "plotly>=5,<6",
+  "simdkalman==1.0.2",
+  "matplotlib>=3.7"
+]
+
+packages = ["sim"]
+include  = ["README.md", "LICENSE"]
