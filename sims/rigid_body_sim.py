@@ -20,6 +20,8 @@ class RigidBodySim:
     def __init__(self):
         self.state =[]
         self.trajectory =[]
+        self.R_pred = np.eye(3)
+        self.P_pred = np.eye(3)
         pass
 
 
