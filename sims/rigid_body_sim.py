@@ -933,7 +933,7 @@ class RigidBodySim:
             omega = R @ invII @ R.T @ spi
             X = [[R, o], omega, doto, Xc]
             Xout.append(X)
-            self.state=x
+            self.state=X
         self.trajectory=Xout
         return Xout
 
@@ -966,7 +966,7 @@ class RigidBodySim:
             omegak = Rk @ invII @ Rk.T @ spik
             X = [[Rk, ok], omegak, pk, Xck]
             Xout.append(X)
-            self.state=x
+            self.state=X
         self.trajectory=Xout    
         return Xout
 
