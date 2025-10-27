@@ -194,9 +194,18 @@ t, sol, fig = rb.simulate_dy_system(
 
 ## 🌀 Rigid-body integration (Euler & RK4 pipeline)
 
-Your class defines a higher-level rigid-body stepper relying on user-provided physics hooks:
-- `externalForceModel(self, parameters, X)` → `(tau_external, f_external)`
-- `actuator(self, parameters, t, X, tau_external, f_external)` → `(tau_actuator, f_actuator)`
+Register your physics hooks first:
+
+- `set_external_force_model(fn)` where `fn` is **either**
+  - `fn(parameters, X) -> (tau_e, f_e)` **or**
+  - `fn(self, parameters, X) -> (tau_e, f_e)`
+- `set_actuator(fn)` where `fn` is **either**
+  - `fn(parameters, t, X, tau_e, f_e) -> (tau_a, f_a)` **or**
+  - `fn(self, parameters, t, X, tau_e, f_e) -> (tau_a, f_a)`
+
+All returned vectors must be length-3. If a hook is not set, the integrators default to zeros for that hook.
+
+The integrators expect a composite state:
 
 The integrators expect a composite state:
 ```
@@ -204,46 +213,43 @@ X = [[R, o], omega, p, Xc]
   where R ∈ R^{3x3}, o ∈ R^3, omega ∈ R^3, p ∈ R^3, and Xc = controller/extra state
 ```
 
-Minimal demo stub (no forces, no control, just constant momentum):
+### Minimal demo (no forces, no control → constant linear/angular momenta)
 ```python
-import types
 import numpy as np
+import sims
 
 rb = sims.RigidBodySim()
 
-# Provide global-like hooks available to the class methods
-def externalForceModel(self, parameters, X):
-    tau_e = np.zeros(3)
-    f_e = np.zeros(3)
-    return tau_e, f_e
+# Zero models (both signatures without `self`; bound methods also supported)
+def ext_zero(parameters, X):
+    return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
 
-def actuator(self, parameters, t, X, tau_e, f_e):
-    tau_a = np.zeros(3)
-    f_a = np.zeros(3)
-    return tau_a, f_a
+def act_zero(parameters, t, X, tau_e, f_e):
+    return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
 
-# Inject into module namespace if needed (depends on your class' lookup resolution)
-globals()["externalForceModel"] = externalForceModel
-globals()["actuator"] = actuator
+rb.set_external_force_model(ext_zero)
+rb.set_actuator(act_zero)
 
-M = 1.0
+# Parameters
+M  = 1.0
 II = np.diag([0.1, 0.2, 0.3])
 params = {"M": M, "II": II}
 
-R0 = np.eye(3)
-o0 = np.array([0.0, 0.0, 0.0])
-omega0 = np.array([0.0, 0.0, 5.0])    # initial angular velocity
-doto0 = np.array([0.2, 0.0, 0.0])     # initial linear velocity
-Xc0 = np.zeros(3)
+# Initial state
+R0     = np.eye(3)
+o0     = np.array([0.0, 0.0, 0.0])
+omega0 = np.array([0.0, 0.0, 5.0])   # initial angular velocity
+doto0  = np.array([0.2, 0.0, 0.0])   # initial linear velocity (p/M)
+Xc0    = np.zeros(3)
 
 ICs = [[R0, o0], omega0, doto0, Xc0]
 
-# Choose stepper
+# Integrate (Euler or RK4)
 dt, Tmax = 0.02, 1.0
-# euler_states = rb.eulers_method(dt, Tmax, params, ICs)        # Euler (make sure typo fix is applied)
-rk_states = rb.runga_kutta_method(dt, Tmax, params, ICs)       # RK4 pipeline
+# euler_states = rb.eulers_method(dt, Tmax, params, ICs)  # (ensure typo fix: r_from_quaternions)
+rk_states   = rb.runga_kutta_method(dt, Tmax, params, ICs)
 
-# Turn rigid-body states into cube frames
+# Turn states into cube frames and animate
 cube = {'l': 1.0, 'w': 1.0, 'h': 1.0, 'xp': 0.5, 'yp': 0.5, 'zp': 0.5}
 base = np.array(rb.cube_vertices(cube))
 

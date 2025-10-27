@@ -11,6 +11,7 @@ from sympy.physics.mechanics import dynamicsymbols, init_vprinting
 init_vprinting(pretty_print=True)
 
 import plotly.graph_objects as go
+from typing import Callable, Any
 
 
 class RigidBodySim:
@@ -442,7 +443,110 @@ class RigidBodySim:
         # Return the figure object
         return fig
 
-    def rigid_body_system(self, externalForceModel, actuator,parameters, t, X):
+    def set_external_force_model(self, fn: Callable[..., tuple]) -> None:
+        """
+        Register the external force/torque model used by the rigid-body integrators.
+
+        The function you provide is called each integration step to produce the **external**
+        generalized inputs: torque (τₑ) and force (fₑ). Both must be 3-vectors.
+
+        Accepted call signatures
+        ------------------------
+        - fn(parameters, X) -> (tau_e, f_e)
+        - fn(self, parameters, X) -> (tau_e, f_e)
+
+        where:
+        parameters : dict
+            Simulation parameters (e.g., {'M': mass, 'II': inertia, ...}).
+        X : list
+            Current state in the class' format:
+                X = [[R, o], omega, p, Xc]
+                with R∈ℝ^{3×3}, o∈ℝ³, omega∈ℝ³, p∈ℝ³, Xc=aux/controller state.
+
+        Returns
+        -------
+        None
+
+        Requirements
+        ------------
+        - tau_e and f_e must be array-like 3-vectors (shape (3,) after `np.asarray`).
+        - Units and frames must be consistent with your dynamics (same frame as used in
+        `rigid_body_system` and the integrators).
+
+        Notes
+        -----
+        If no external model is registered, the integrators fall back to zeros for (τₑ, fₑ).
+        The method supports either a bound method (expects `self`) or a free function.
+
+        Examples
+        --------
+        >>> def gravity_only(parameters, X):
+        ...     M = parameters['M']
+        ...     g = 9.81
+        ...     tau_e = [0.0, 0.0, 0.0]
+        ...     f_e = [0.0, 0.0, -M*g]
+        ...     return tau_e, f_e
+        >>> sim.set_external_force_model(gravity_only)
+        """
+        if not callable(fn):
+            raise TypeError("externalForceModel must be callable")
+        self.externalForceModel = fn
+
+    def set_actuator(self, fn: Callable[..., tuple]) -> None:
+        """
+        Register the actuator model (control inputs) used by the rigid-body integrators.
+
+        The function you provide is called each integration step to produce the **actuated**
+        generalized inputs: torque (τₐ) and force (fₐ). Both must be 3-vectors. The actuator
+        can depend on time, current state, and the external inputs (τₑ, fₑ).
+
+        Accepted call signatures
+        ------------------------
+        - fn(parameters, t, X, tau_e, f_e) -> (tau_a, f_a)
+        - fn(self, parameters, t, X, tau_e, f_e) -> (tau_a, f_a)
+
+        where:
+        parameters : dict
+            Simulation parameters (e.g., {'M': mass, 'II': inertia, ...}).
+        t : float
+            Current simulation time.
+        X : list
+            Current state in the class' format:
+                X = [[R, o], omega, p, Xc]
+        tau_e, f_e : array-like
+            External torque/force passed through from the external model.
+
+        Returns
+        -------
+        None
+
+        Requirements
+        ------------
+        - tau_a and f_a must be array-like 3-vectors (shape (3,) after `np.asarray`).
+        - Keep frames/units consistent with your dynamics implementation.
+
+        Notes
+        -----
+        If no actuator is registered, the integrators fall back to zeros for (τₐ, fₐ).
+        The method supports either a bound method (expects `self`) or a free function.
+
+        Examples
+        --------
+        >>> def pd_attitude(parameters, t, X, tau_e, f_e):
+        ...     # toy example: no forces, small stabilizing torque
+        ...     Kp = 0.5; Kd = 0.1
+        ...     R, o = X[0]
+        ...     omega = X[1]
+        ...     tau_a = (-Kd) * omega  # simple damping
+        ...     f_a = [0.0, 0.0, 0.0]
+        ...     return tau_a, f_a
+        >>> sim.set_actuator(pd_attitude)
+        """
+        if not callable(fn):
+            raise TypeError("actuator must be callable")
+        self.actuator = fn
+
+    def rigid_body_system(self, parameters, t, X):
         """
         Models the dynamics of a rigid body system.
 
@@ -489,11 +593,43 @@ class RigidBodySim:
             - ...
 
         Notes:
-            - Requires user-defined `externalForceModel` and `actuator` functions to provide
+            - Requires user-defined `externalForceModel` and `actuator` functions to be registered.
               external and actuator forces/torques.
             - Spatial angular velocity \( \omega \) is normalized if its magnitude exceeds a small threshold.
 
         """
+        taue = np.zeros(3); fe = np.zeros(3)
+        taua = np.zeros(3); fa  = np.zeros(3)
+
+        ext = getattr(self, "externalForceModel", None)
+        act = getattr(self, "actuator", None)
+
+        # Helper to coerce 3-vectors
+        def _v3(x):
+            x = np.asarray(x, dtype=float).reshape(-1)
+            if x.size != 3:
+                raise ValueError("Expected a 3-vector")
+            return x
+
+        # Call externalForceModel if provided
+        if callable(ext):
+            try:
+                # bound method or function not expecting self explicitly
+                _taue, _fe = ext(parameters, X)
+            except TypeError:
+                # free function expecting self as first arg
+                _taue, _fe = ext(self, parameters, X)
+            taue, fe = _v3(_taue), _v3(_fe)
+
+        # Call actuator if provided (uses taue/fe even if zeros)
+        if callable(act):
+            try:
+                _taua, _fa = act(parameters, t, X, taue, fe)
+            except TypeError:
+                _taua, _fa = act(self, parameters, t, X, taue, fe)
+            taua, fa = _v3(_taua), _v3(_fa)
+
+
         # Extract parameters
         barX, M = parameters['CM'], parameters['M']
 
@@ -503,8 +639,11 @@ class RigidBodySim:
         p = X[2]  # Linear momentum
 
         # Compute external and actuator forces and torques
-        taue, fe = externalForceModel(self, parameters, X)  # External forces and torques
-        taua, fa = actuator(self, parameters, t, X, taue, fe)  # Actuator forces and torques
+        if not (callable(ext) and callable(act)):
+            taue = taua = fe = fa = np.zeros(3)
+        else:
+            taue, fe = ext(self, parameters, X)  # External forces and torques
+            taua, fa = act(self, parameters, t, X, taue, fe)  # Actuator forces and torques
 
         # Compute time derivatives of position, momentum, and spin
         doto = p / M  # Time derivative of position
