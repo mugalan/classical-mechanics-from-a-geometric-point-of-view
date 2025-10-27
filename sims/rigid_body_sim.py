@@ -932,7 +932,8 @@ class RigidBodySim:
             omega = R @ invII @ R.T @ spi
             X = [[R, o], omega, doto, Xc]
             Xout.append(X)
-
+            self.state=x
+        self.trajectory=Xout
         return Xout
 
     def runga_kutta_method(self, dt, Tmax, parameters, ICs):
@@ -963,7 +964,8 @@ class RigidBodySim:
             omegak = Rk @ invII @ Rk.T @ spik
             X = [[Rk, ok], omegak, pk, Xck]
             Xout.append(X)
-        self.state=Xout    
+            self.state=x
+        self.trajectory=Xout    
         return Xout
 
     def rk4_function(self, dtk, X, tk, Xk, parameters):
