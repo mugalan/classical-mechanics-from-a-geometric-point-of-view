@@ -18,6 +18,7 @@ from typing import Callable, Any
 class RigidBodySim:
 
     def __init__(self):
+        self.state =[]
         pass
 
 
@@ -962,7 +963,7 @@ class RigidBodySim:
             omegak = Rk @ invII @ Rk.T @ spik
             X = [[Rk, ok], omegak, pk, Xck]
             Xout.append(X)
-
+        self.state=Xout    
         return Xout
 
     def rk4_function(self, dtk, X, tk, Xk, parameters):
