@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+from numpy import linalg as LA
 from scipy.integrate import odeint
 import math
 from numpy import linalg
@@ -993,4 +994,187 @@ class RigidBodySim:
             rotatedVertices+=[[XX0]];
         return rotatedVertices
 
+    def plot_momentum_energy_intersection(
+        self,
+        *,
+        parameters: dict,
+        ICOmega: np.ndarray,
+        ICR: np.ndarray | None = None,
+        grid_phi: int = 50,
+        grid_theta: int = 100,
+        tol: float = 1e-3,
+        overlay_spatial: bool = False,
+        sphere_opacity: float = 0.35,
+        ellipsoid_opacity: float = 0.35,
+        title: str | None = None,
+        show: bool = True,
+    ):
+        """
+        Plot |π| = const sphere and 2*KE = const ellipsoid in π-space and mark their intersection (polhode).
 
+        Parameters
+        ----------
+        parameters : dict
+            Must include 'II' (3x3 inertia in *body* frame). Symmetric, SPD expected.
+        ICOmega : (3,) array-like
+            Initial angular velocity in body frame (ω₀). Used to set |π| and KE via π₀ = I ω₀.
+        ICR : (3,3) array-like, optional
+            Rotation matrix from body→spatial frame at the instant of interest.
+            If provided with overlay_spatial=True, a spatial-frame overlay is drawn (R·π).
+        grid_phi : int
+            Number of polar samples on the parameter grid (≥ 8 recommended).
+        grid_theta : int
+            Number of azimuth samples on the parameter grid (≥ 16 recommended).
+        tol : float
+            Relative tolerance for detecting the intersection curve on the sphere:
+            mark points where |πᵀ I^{-1} π − 2KE| ≤ tol * (2KE).
+        overlay_spatial : bool
+            If True and `ICR` is provided, overlays the rotated surfaces/curve (spatial frame).
+        sphere_opacity : float
+            Opacity of the |π| sphere surface (0–1).
+        ellipsoid_opacity : float
+            Opacity of the 2KE ellipsoid surface (0–1).
+        title : str, optional
+            Figure title. If None, a default informative title is used.
+        show : bool
+            If True, calls fig.show().
+
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure
+            The constructed figure.
+        info : dict
+            Useful computed scalars: {'magPi', 'KE', 'pi0_body', 'pi0_spatial'(if ICR), 'eigvals', 'eigvecs'}.
+
+        Notes
+        -----
+        - In π-space, the constant-energy surface is an ellipsoid: πᵀ I^{-1} π = 2 KE.
+        In the principal-axes basis (I = diag(λ₁,λ₂,λ₃)), semi-axes are √(2 KE λᵢ).
+        - The intersection with the |π| sphere is the (body-frame) polhode curve.
+        """
+        II = np.asarray(parameters["II"], dtype=float)
+        if II.shape != (3, 3):
+            raise ValueError("parameters['II'] must be a 3x3 matrix")
+        if not np.allclose(II, II.T, atol=1e-10):
+            raise ValueError("Inertia matrix II must be symmetric")
+        # Basic SPD sanity (cholesky)
+        LA.cholesky(II)
+
+        ICOmega = np.asarray(ICOmega, dtype=float).reshape(3,)
+        invII = LA.inv(II)
+
+        # π0, |π|, KE
+        pi0_body = II @ ICOmega
+        magPi = LA.norm(pi0_body)
+        KE = 0.5 * ICOmega @ (II @ ICOmega)  # == 0.5 * pi0^T invII pi0
+
+        # Parametric grid on sphere (body frame)
+        phi = np.linspace(0.0, np.pi, grid_phi)
+        theta = np.linspace(0.0, 2.0 * np.pi, grid_theta)
+        PHI, THETA = np.meshgrid(phi, theta, indexing="ij")  # (P,T)
+
+        # Sphere of radius |π|
+        x1 = magPi * np.sin(PHI) * np.cos(THETA)
+        y1 = magPi * np.sin(PHI) * np.sin(THETA)
+        z1 = magPi * np.cos(PHI)
+
+        # Ellipsoid for π^T invII π = 2KE → in principal axes: axes = sqrt(2 KE * λ)
+        lam, Q = LA.eigh(II)  # II = Q diag(lam) Q^T, lam>0 ascending
+        axes = np.sqrt(2.0 * KE * lam)  # (3,)
+
+        # Build ellipsoid in principal frame then rotate to body frame
+        xp = axes[0] * np.sin(PHI) * np.cos(THETA)
+        yp = axes[1] * np.sin(PHI) * np.sin(THETA)
+        zp = axes[2] * np.cos(PHI)
+        Pp = np.stack([xp, yp, zp], axis=0).reshape(3, -1)        # (3, N)
+        Pb = (Q @ Pp).reshape(3, *xp.shape)                       # (3, P, T)
+        x2, y2, z2 = Pb[0], Pb[1], Pb[2]
+
+        # Intersection on the sphere: evaluate f(π) = π^T invII π - 2KE
+        Ps = np.stack([x1, y1, z1], axis=0).reshape(3, -1)        # sphere points (3,N)
+        f = np.einsum("ij,jn,in->n", invII, Ps, Ps).reshape(x1.shape) - (2.0 * KE)
+        mask = np.abs(f) <= (tol * 2.0 * KE)
+        xi, yi, zi = x1[mask], y1[mask], z1[mask]                 # polhode samples (body frame)
+
+        # Optional spatial overlay via ICR (R body→spatial)
+        traces = []
+        if overlay_spatial and ICR is not None:
+            R = np.asarray(ICR, dtype=float).reshape(3, 3)
+            # Rotate surfaces
+            S_sphere = (R @ Ps).reshape(3, *x1.shape)
+            S_ellip  = (R @ Pb.reshape(3, -1)).reshape(3, *x2.shape)
+            x1s, y1s, z1s = S_sphere[0], S_sphere[1], S_sphere[2]
+            x2s, y2s, z2s = S_ellip[0],  S_ellip[1],  S_ellip[2]
+            # Rotate intersection points
+            Pi = np.stack([xi, yi, zi], axis=0)  # (3, K)
+            Pis = (R @ Pi)
+            xis, yis, zis = Pis[0], Pis[1], Pis[2]
+        else:
+            x1s = y1s = z1s = x2s = y2s = z2s = xis = yis = zis = None
+
+        # Build Plotly figure
+        fig = go.Figure()
+
+        # Body-frame surfaces
+        fig.add_trace(go.Surface(
+            x=x1, y=y1, z=z1, showscale=False, opacity=sphere_opacity,
+            name="|π| = const (sphere, body)"
+        ))
+        fig.add_trace(go.Surface(
+            x=x2, y=y2, z=z2, showscale=False, opacity=ellipsoid_opacity,
+            name="2·KE = const (ellipsoid, body)"
+        ))
+        # Intersection (polhode) in body frame
+        fig.add_trace(go.Scatter3d(
+            x=xi, y=yi, z=zi, mode="markers",
+            marker=dict(size=3),
+            name="intersection (polhode, body)"
+        ))
+
+        # Optional spatial overlay
+        if overlay_spatial and ICR is not None:
+            fig.add_trace(go.Surface(
+                x=x1s, y=y1s, z=z1s, showscale=False, opacity=0.2,
+                name="|π| sphere (spatial)"
+            ))
+            fig.add_trace(go.Surface(
+                x=x2s, y=y2s, z=z2s, showscale=False, opacity=0.2,
+                name="2·KE ellipsoid (spatial)"
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=xis, y=yis, z=zis, mode="markers",
+                marker=dict(size=3),
+                name="intersection (spatial overlay)"
+            ))
+
+        # Axes range (auto) and layout
+        max_extent = float(np.max(np.abs(np.concatenate([
+            x1.ravel(), y1.ravel(), z1.ravel(),
+            x2.ravel(), y2.ravel(), z2.ravel()
+        ]))))
+        pad = 0.1 * max_extent
+        rng = [-max_extent - pad, max_extent + pad]
+
+        fig.update_layout(
+            title=title or "Intersection of angular-momentum sphere and constant-energy ellipsoid (π-space)",
+            scene=dict(
+                xaxis=dict(range=rng, autorange=False),
+                yaxis=dict(range=rng, autorange=False),
+                zaxis=dict(range=rng, autorange=False),
+                aspectmode="data"
+            ),
+            showlegend=True
+        )
+
+        if show:
+            fig.show()
+
+        info = {
+            "magPi": magPi,
+            "KE": KE,
+            "pi0_body": pi0_body,
+            "pi0_spatial": (ICR @ pi0_body) if (overlay_spatial and ICR is not None) else None,
+            "eigvals": lam,
+            "eigvecs": Q,
+        }
+        return fig, info
