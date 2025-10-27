@@ -442,7 +442,7 @@ class RigidBodySim:
         # Return the figure object
         return fig
 
-    def rigid_body_system(self, parameters, t, X):
+    def rigid_body_system(self, externalForceModel, actuator,parameters, t, X):
         """
         Models the dynamics of a rigid body system.
 
