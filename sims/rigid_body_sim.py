@@ -1245,7 +1245,7 @@ class RigidBodySim:
         R_pred_minus = self.R_pred @ self.exp_map(DeltaT * Omega_km1)
 
         # 2) Linearize at predicted-minus attitude for measurement update
-        A_km1, G_km1, H_km1 = linearization_AGH(self, DeltaT, Omega_km1, R_pred_minus)
+        A_km1, G_km1, H_km1 = self.linearization_AGH(DeltaT, Omega_km1, R_pred_minus)
 
         # 3) Covariance prediction
         P_pred_minus = A_km1 @ self.P_pred @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
