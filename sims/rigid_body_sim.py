@@ -1197,7 +1197,7 @@ class RigidBodySim:
     def set_KF_innovation(self, fn: Callable[..., tuple]) -> None:
         self.kf_innovation=fn
 
-    def linearization_AGH(qq, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
+    def linearization_AGH(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
         A_k-1 = I - dt * hat(Omega_{k-1})
         G_k-1 = sqrt(dt) * I
