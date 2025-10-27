@@ -1191,6 +1191,12 @@ class RigidBodySim:
 
     # --- EKF ---
 
+    def set_sensor(self, fn: Callable[..., tuple]) -> None:
+        self.sensor=fn
+
+    def set_KF_innovation(self, fn: Callable[..., tuple]) -> None:
+        self.kf_innovation=fn
+
     def linearization_AGH(qq, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
         A_k-1 = I - dt * hat(Omega_{k-1})
