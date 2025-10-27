@@ -19,6 +19,7 @@ class RigidBodySim:
 
     def __init__(self):
         self.state =[]
+        self.trajectory =[]
         pass
 
 
@@ -911,7 +912,7 @@ class RigidBodySim:
         spi = R @ II @ R.T @ omega
         p = M * doto
         Xout = [ICs]
-
+        self.state=ICs
         for t in timeSteps:
             taue, fe = externalForceModel(self, parameters, X)
             taua, fa = actuator(self, parameters, t, X, taue, fe)
@@ -943,6 +944,7 @@ class RigidBodySim:
         X=ICs;
         Xout=[X];
 
+        self.state=ICs
         for t in timeSteps:
             Y1 = self.rk4_function(0.5*dt, X, t, X, parameters)
             Y2 = self.rk4_function(0.5*dt, X, t+0.5*dt, Y1, parameters)
