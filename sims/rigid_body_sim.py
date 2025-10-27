@@ -191,7 +191,7 @@ class RigidBodySim:
             qomegat = np.concatenate(([np.cos(thetaomegat/2)], np.sin(thetaomegat/2) * nomega))
             R = self.r_from_quaternions(qomegat)
         else:
-            R=self.state[0][0]
+            R=np.eye(3)
         return R
 
     def re3_equals_gamma(self, gamma):
