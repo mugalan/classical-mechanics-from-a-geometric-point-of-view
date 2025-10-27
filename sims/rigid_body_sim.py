@@ -1187,3 +1187,81 @@ class RigidBodySim:
             "eigvecs": Q,
         }
         return fig, info
+
+
+    # --- EKF ---
+
+    def linearization_AGH(qq, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
+        """
+        A_k-1 = I - dt * hat(Omega_{k-1})
+        G_k-1 = sqrt(dt) * I
+        H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
+        Uses the identity R^T hat(e) R = hat(R^T e) for efficiency.
+        """
+        I3 = np.eye(3)
+        Omega = np.asarray(Omega, float).reshape(3,)
+        R = np.asarray(R_for_H, float).reshape(3, 3)
+
+        # A and G
+        A_km1 = I3 - DeltaT * self.hat_matrix(Omega)
+        G_km1 = (DeltaT ** 0.5) * I3
+
+        # H using e1 & e3
+        e1 = np.array([1., 0., 0.])
+        e3 = np.array([0., 0., 1.])
+        H1 = -self.hat_matrix(R.T @ e1)  # == -(R^T @ hat(e1) @ R)
+        H3 = -self.hat_matrix(R.T @ e3)
+        H_km1 = np.vstack([H1, H3])    # (6,3)
+
+        return A_km1, G_km1, H_km1
+
+
+    # --- EKF predict/update (intrinsic, e1 & e3) ---
+
+    def predict_update(
+        self,
+        DeltaT: float,
+        Omega_km1: np.ndarray,       # body ang. vel. (as per your convention for A)
+        Sigma_q: np.ndarray,         # process noise cov (3x3) for gyro/process
+        Sigma_m: np.ndarray,         # measurement noise cov (6x6) for stacked (e1, e3)
+        A_n_meas: np.ndarray,        # measured R^T e1  (from IMU)
+        A_g_meas: np.ndarray,        # measured R^T e3  (from IMU)
+    ):
+        """
+        Implements:
+        R^- = R @ exp(dt * Omega)
+        P^- = A P A^T + G Σ_q G^T
+        K   = P^- H^T (H P^- H^T + Σ_m)^{-1}
+        R^+ = R^- @ exp(dt * (K (y - y_hat)))
+        P^+ = (I - K H) P^-         [or Joseph form, recommended]
+        """
+        # 1) State prediction
+        R_pred_minus = self.R_pred @ self.exp_map(DeltaT * Omega_km1)
+
+        # 2) Linearize at predicted-minus attitude for measurement update
+        A_km1, G_km1, H_km1 = linearization_AGH(self, DeltaT, Omega_km1, R_pred_minus)
+
+        # 3) Covariance prediction
+        P_pred_minus = A_km1 @ self.P_pred @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
+
+        # 4) Innovation
+        L = innovation(R_pred_minus, A_n_meas, A_g_meas)  # (6,)
+
+        # 5) Kalman gain (note: NO G in the measurement covariance)
+        S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m      # (6x6)
+        K = P_pred_minus @ H_km1.T @ np.linalg.inv(S)     # (3x6)
+
+        # 6) State update on SO(3)
+        delta = DeltaT * (K @ L)                          # (3,)
+        R_pred = R_pred_minus @ self.exp_map(delta)
+
+        # 7) Covariance update (Joseph form recommended for SPD robustness)
+        I3 = np.eye(3)
+        # Simple form:
+        # P_pred = (I3 - K @ H_km1) @ P_pred_minus
+        # Joseph-stabilized:
+        IKH = (I3 - K @ H_km1)
+        P_pred = IKH @ P_pred_minus @ IKH.T + K @ Sigma_m @ K.T
+        self.R_pred=R_pred
+        self.P_pred=P_pred
+        return R_pred, P_pred, K, H_km1, S
