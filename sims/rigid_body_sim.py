@@ -1251,7 +1251,7 @@ class RigidBodySim:
         P_pred_minus = A_km1 @ self.P_pred @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
 
         # 4) Innovation
-        L = innovation(R_pred_minus, A_n_meas, A_g_meas)  # (6,)
+        L = self.kf_innovation(R_pred_minus, A_n_meas, A_g_meas)  # (6,)
 
         # 5) Kalman gain (note: NO G in the measurement covariance)
         S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m      # (6x6)
