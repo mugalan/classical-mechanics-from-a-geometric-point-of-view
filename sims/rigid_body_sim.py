@@ -179,6 +179,52 @@ class RigidBodySim:
         return phi, 0, 0
 
     def exp_map(self, phi):
+        """
+        Exponential map from so(3) → SO(3) using Euler–Rodrigues (unit-quaternion) formula.
+
+        Interprets `phi ∈ ℝ³` as a rotation **vector** (axis–angle in vector form):
+        θ = ‖phi‖ is the rotation angle (radians), and n = phi / θ is the unit axis.
+        The corresponding unit quaternion is
+            q = [cos(θ/2),  sin(θ/2) * n]
+        and the rotation matrix is obtained from this quaternion.
+
+        For very small angles (θ < 1e-8), a first-order quaternion approximation
+        q ≈ [1 − θ²/8,  0.5*phi] is used for numerical stability. The quaternion is
+        normalized before conversion to ensure a proper rotation matrix.
+
+        Parameters
+        ----------
+        phi : array_like, shape (3,)
+            Rotation vector (axis–angle). Its norm is the rotation angle in radians;
+            its direction is the rotation axis.
+
+        Returns
+        -------
+        R : ndarray, shape (3, 3)
+            Proper orthonormal rotation matrix in SO(3) corresponding to exp(̂phi).
+
+        Notes
+        -----
+        - This is equivalent to the matrix exponential `exp(hat(phi))`, where
+        `hat(v)` is the 3×3 skew-symmetric (cross-product) matrix of `v`.
+        - The returned matrix is orthonormal up to floating-point roundoff.
+        - Small-angle branch is accurate to O(θ³) and avoids division by very small θ.
+        - The mapping is consistent with *right-multiplication* usage in updates like
+        `R_new = R @ exp_map(delta)`.
+
+        Examples
+        --------
+        >>> rb = RigidBodySim()
+        >>> Rz90 = rb.exp_map([0, 0, np.pi/2])  # 90° about z
+        >>> np.allclose(Rz90 @ [1,0,0], [0,1,0], atol=1e-12)
+        True
+
+        See Also
+        --------
+        hat_matrix : Build the skew-symmetric matrix of a 3-vector.
+        r_from_quaternions : Convert a unit quaternion to a rotation matrix.
+        """
+
         phi = np.asarray(phi, float).reshape(3,)
         th = np.linalg.norm(phi)
         if th < 1e-8:
@@ -854,8 +900,60 @@ class RigidBodySim:
         return dXdt
 
     def cube_vertices(self, cube_dimensions):
-        l, w, h = cube_dimensions['l'], cube_dimensions['w'], cube_dimensions['h']
-        xp, yp, zp = cube_dimensions['xp'], cube_dimensions['yp'], cube_dimensions['zp']
+        """
+        Return the 8 axis-aligned vertices of a rectangular cuboid as three coordinate lists.
+
+        The cuboid is defined in its local (object) frame by edge lengths `(l, w, h)`.
+        A *pivot* (xp, yp, zp) is subtracted from each coordinate so that the point
+        `(xp, yp, zp)` becomes the origin of the returned vertices. This is convenient
+        when you want rotations to happen about a particular point (e.g., the cube
+        center: set `xp=l/2, yp=w/2, zp=h/2`).
+
+        Parameters
+        ----------
+        cube_dimensions : dict
+            Dictionary with keys:
+            - 'l', 'w', 'h' : float
+                Lengths along the x-, y-, and z-axes, respectively (edge lengths).
+            - 'xp', 'yp', 'zp' : float
+                Pivot offset to subtract from each coordinate. After subtraction,
+                the pivot lies at the origin (0, 0, 0) of the returned vertex set.
+
+        Returns
+        -------
+        list[list[float]]
+            A list `[X, Y, Z]` of three lists, each of length 8.
+            These are the x-, y-, and z-coordinates of the 8 vertices in a fixed order:
+            indices 0–3 are the lower (z = -zp) face, 4–7 are the upper (z = h - zp) face:
+                0: (-xp,      -yp,      -zp)
+                1: (-xp,       w-yp,    -zp)
+                2: ( l-xp,     w-yp,    -zp)
+                3: ( l-xp,    -yp,      -zp)
+                4: (-xp,      -yp,       h-zp)
+                5: (-xp,       w-yp,     h-zp)
+                6: ( l-xp,     w-yp,     h-zp)
+                7: ( l-xp,    -yp,       h-zp)
+
+        Notes
+        -----
+        - The shape is 3×8 (as three 1×8 lists). This layout plays nicely with later
+        rigid-body transforms, e.g., `R @ vertices + o`, where `R` is 3×3 and `o` is 3×1.
+        - To center the cuboid at the origin before rotation, use
+        `xp = l/2`, `yp = w/2`, `zp = h/2`.
+
+        Examples
+        --------
+        >>> dims = {'l': 2.0, 'w': 2.0, 'h': 4.0, 'xp': 1.0, 'yp': 1.0, 'zp': 2.0}
+        >>> X, Y, Z = RigidBodySim().cube_vertices(dims)
+        >>> len(X), len(Y), len(Z)
+        (8, 8, 8)
+
+        See Also
+        --------
+        rotate_and_translate : Apply a rotation and translation to these vertices.
+        """
+        l, w, h = cube_dimensions.get('l',1.0), cube_dimensions.get('w',1.0), cube_dimensions.get('h',1.0)
+        xp, yp, zp = cube_dimensions.get('xp',1.0), cube_dimensions.get('yp',1.0), cube_dimensions.get('zp',1.0)
 
         X = [-xp, -xp, l-xp, l-xp, -xp, -xp, l-xp, l-xp]
         Y = [-yp, w-yp, w-yp, -yp, -yp, w-yp, w-yp, -yp]
@@ -864,6 +962,57 @@ class RigidBodySim:
         return [X, Y, Z]
 
     def animated_cube_flat_shading(self, cubeVertices,figTitle):
+        """
+        Animate a rigid-body cube (triangulated) with flat shading in Plotly.
+
+        This renders a sequence of cube poses as an animation using a single
+        `Mesh3d` per frame. Each pose is provided as the 8 vertices of the cube
+        after applying your rigid-body transform. The faces are drawn via fixed
+        triangle indices (`i, j, k`) and displayed with flat shading.
+
+        Parameters
+        ----------
+        cubeVertices : list
+            A list of frames. **Each element must be a one-item list** whose item
+            is `[X, Y, Z]`, where `X`, `Y`, `Z` are length-8 lists (or arrays) of
+            the cube’s vertex coordinates at that time step:
+
+                cubeVertices = [
+                    [[X0, Y0, Z0]],   # frame 0 → each of X0/Y0/Z0 has 8 numbers
+                    [[X1, Y1, Z1]],   # frame 1
+                    ...
+                ]
+
+            This matches the output structure of `simulating_a_cube(...)`, which
+            builds `rotatedVertices=[[XX0], [XX1], ...]` with `XXk=[Xk, Yk, Zk]`.
+
+        figTitle : str
+            Title for the Plotly figure.
+
+        Returns
+        -------
+        plotly.graph_objects.Figure
+            The animated Plotly figure. Use `fig.show()` to display (already
+            called inside the method) or further customize the layout/traces.
+
+        Notes
+        -----
+        - The cube faces are defined by the fixed triangle index lists `i, j, k`
+        assuming vertex ordering consistent with `cube_vertices(...)`:
+            indices 0–3 → lower face, 4–7 → upper face.
+        - The scene axis ranges are set to `[-5, 5]` for all axes; adjust as needed.
+        - Animation `frame.duration` is set to 10 (milliseconds).
+        - If you want to use a different vertex container shape (e.g. a direct
+        `(3,8)` array per frame), adapt the indexing where `x=xx[0][0]`, etc.
+
+        Examples
+        --------
+        >>> rb = RigidBodySim()
+        >>> frames = rb.simulating_a_cube(dt, Tmax, cube_dims, params, ICs)
+        >>> fig = rb.animated_cube_flat_shading(frames, "Rigid Body RK4 Demo")
+        >>> # fig is shown and also returned
+        """
+
         fig = go.Figure(
             frames=[go.Frame(data=[
             go.Mesh3d(
@@ -909,7 +1058,86 @@ class RigidBodySim:
         return fig
 
     def eulers_method(self, dt, Tmax, parameters, ICs):
-        M, II = parameters['M'], parameters['II']
+        """
+        Integrate rigid-body translation & rotation with **explicit (forward) Euler** time stepping.
+
+        This stepper advances a free/flying rigid body subject to external and control
+        wrenches provided by user hooks `externalForceModel(...)` and `actuator(...)`.
+        The state uses your 4-block layout:
+            X = [[R, o], omega, doto, Xc]
+        where
+            R     ∈ ℝ^{3×3} : rotation (body→inertial),
+            o     ∈ ℝ^3     : position of the reference point,
+            omega ∈ ℝ^3     : spatial angular velocity (in inertial frame),
+            doto  ∈ ℝ^3     : linear velocity (in inertial frame),
+            Xc    ∈ ℝ^m     : extra/controller state (passed through here).
+
+        Dynamics (discrete Euler update)
+        --------------------------------
+        Let M be mass, II the body inertia in the body frame. Define
+        spi = R II Rᵀ omega          # spatial angular momentum (in inertial frame)
+        p   = M doto                  # linear momentum (in inertial frame)
+
+        At each step:
+        1) Query user hooks for wrenches:
+            (tau_e, f_e) = externalForceModel(self, parameters, X)
+            (tau_a, f_a) = actuator(self, parameters, t, X, tau_e, f_e)
+            with tau_* ∈ ℝ^3 torques, f_* ∈ ℝ^3 forces (in inertial frame).
+
+        2) Integrate momenta (explicit Euler):
+            dspi = tau_e + tau_a
+            dp   = f_e   + f_a
+            spi ← spi + dt * dspi
+            p   ← p   + dt * dp
+
+        3) Integrate pose/velocity:
+            o     ← o + dt * doto
+            doto  ← p / M
+            omega ← (R II Rᵀ)^{-1} spi = R (II^{-1}) Rᵀ spi
+            R     ← exp( dt * omega ) @ R
+            (Uses quaternion-based exp map for numerical stability; small-angle branch included.)
+
+        Parameters
+        ----------
+        dt : float
+            Time step (seconds).
+        Tmax : float
+            Total simulated time (seconds). The integrator runs over t = 0:dt:Tmax.
+        parameters : dict
+            Physical parameters. Recognized keys:
+            'M'  : mass (default 1.0)
+            'II' : 3×3 body inertia matrix (default I₃)
+            Additional keys are passed to user hooks.
+        ICs : list
+            Initial state in the form [[R0, o0], omega0, doto0, Xc0].
+
+        Returns
+        -------
+        Xout : list
+            List of states `X` at each saved time step, including the initial one.
+            Also stores the last state into `self.state` and the whole trajectory
+            into `self.trajectory`.
+
+        Notes
+        -----
+        - **Stability**: explicit Euler is only conditionally stable; for large angular
+        rates/torques use a sufficiently small `dt` (or prefer the RK4 stepper).
+        - **Hooks contract**: You must provide `externalForceModel(self, parameters, X)`
+        and `actuator(self, parameters, t, X, tau_e, f_e)` that each return a tuple
+        of 3-vectors `(tau, f)` in the **inertial frame**.
+        - Inertia handling assumes `II` is defined in the body frame. The spatial
+        inertia used here is `I_spatial = R II Rᵀ`.
+        - Orientation update uses `self.r_from_quaternions(...)` via an exponential map
+        with a small-angle branch to avoid numerical issues for ‖omega‖ dt ≪ 1.
+
+        Example
+        -------
+        >>> params = {'M': 2.0, 'II': np.diag([0.2, 0.3, 0.4])}
+        >>> R0 = np.eye(3); o0 = np.zeros(3); omega0 = np.zeros(3); doto0 = np.zeros(3); Xc0 = np.zeros(3)
+        >>> ICs = [[R0, o0], omega0, doto0, Xc0]
+        >>> traj = rb.eulers_method(dt=1e-3, Tmax=1.0, parameters=params, ICs=ICs)
+        """
+        M, II = parameters.get('M',1.0), parameters.get('II',np.eye(3))
         invII = np.linalg.inv(II)
         timeSteps = np.arange(0, Tmax+dt, dt)
         R, o, omega, doto, Xc = ICs[0][0], ICs[0][1], ICs[1], ICs[2], ICs[3]
@@ -1295,12 +1523,101 @@ class RigidBodySim:
         return fig, info
 
 
-    # --- EKF ---
+    # --- Rigid Body EKF ---
 
-    def set_sensor(self, fn: Callable[..., tuple]) -> None: self.sensor = fn
-    def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None: self.kf_innovation = fn
+    def set_sensor(self, fn: Callable[..., tuple]) -> None:
+        """
+        Register a **sensor callback** used to simulate/ingest IMU-like measurements.
 
-    def linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
+        The callback will be invoked by your code (e.g., inside tests or higher-level
+        loops) to produce:
+        - a 3-vector gyro reading, and
+        - two 3-vectors for the measured body-frame directions of two inertial axes
+            (by convention here: e1 and e3, but your implementation may choose them).
+
+        Expected callable signature
+        ---------------------------
+        fn(R: np.ndarray, omega_body: np.ndarray, *[, ...]) -> tuple
+            Parameters
+            ----------
+            R : (3,3) ndarray
+                Current attitude (body → inertial).
+            omega_body : (3,) ndarray
+                Body-frame angular velocity used to form the gyro measurement.
+            ... : optional keyword args
+                Noise stds, RNG handle, flags (e.g., renormalize), etc.
+
+            Returns
+            -------
+            Omega_meas : (3,) ndarray
+                Gyro measurement (usually `omega_body + noise`).
+            A_n_meas : (3,) ndarray
+                Noisy measurement of `Rᵀ e1` (direction #1 expressed in body frame).
+            A_g_meas : (3,) ndarray
+                Noisy measurement of `Rᵀ e3` (direction #2 expressed in body frame).
+
+        Notes
+        -----
+        - Your EKF’s measurement covariance `Σ_m` should be compatible with the
+        distribution of `A_n_meas` and `A_g_meas` produced by this function.
+        - If you dynamically choose the inertial axes (not strictly e1/e3), keep the
+        EKF’s H/S construction consistent with that choice.
+
+        Examples
+        --------
+        >>> def my_sensor(R, omega_body, sigma_omega=5e-3, sigma_dir=2e-2):
+        ...     # return (Omega_meas, A_n_meas, A_g_meas)
+        ...     ...
+        >>> rb.set_sensor(my_sensor)
+        """
+        self.sensor = fn
+
+
+    def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None:
+        """
+        Register the **innovation function** L = y - ŷ used by the EKF update.
+
+        The callback computes the stacked residual for two direction measurements.
+        It must return a column vector shaped (6,1) (or a 1-D array convertible to that),
+        consistent with `H ∈ ℝ^{6×3}`.
+
+        Expected callable signature
+        ---------------------------
+        fn(R_pred_minus: np.ndarray, A_n: np.ndarray, A_g: np.ndarray) -> np.ndarray
+            Parameters
+            ----------
+            R_pred_minus : (3,3) ndarray
+                Predicted-minus attitude used to form the predicted measurements.
+            A_n : (3,) ndarray
+                Measured body-frame direction of inertial axis #1 (e.g., `Rᵀ e1`).
+            A_g : (3,) ndarray
+                Measured body-frame direction of inertial axis #2 (e.g., `Rᵀ e3`).
+
+            Returns
+            -------
+            L : (6,1) ndarray
+                Innovation (residual) stacked as:
+                    L = vec([A_n; A_g] - [R^-ᵀ e1; R^-ᵀ e3])
+
+        Notes
+        -----
+        - If you change which inertial axes are used (not strictly e1/e3), this
+        function must mirror that choice so that `ŷ` matches how H is built.
+        - Returning a 1-D array of length 6 is acceptable; it will be reshaped to (6,1)
+        by the EKF before multiplication.
+
+        Examples
+        --------
+        >>> def my_innovation(Rm, A_n, A_g):
+        ...     e1 = np.array([1.,0.,0.]); e3 = np.array([0.,0.,1.])
+        ...     y      = np.vstack([A_n, A_g])
+        ...     y_pred = np.vstack([Rm.T @ e1, Rm.T @ e3])
+        ...     return (y - y_pred).reshape(-1, 1)
+        >>> rb.set_KF_innovation(my_innovation)
+        """
+        self.kf_innovation = fn
+
+    def _linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
         A_k-1 = I - dt * hat(Omega_{k-1})
         G_k-1 = sqrt(dt) * I
@@ -1338,7 +1655,7 @@ class RigidBodySim:
         A_g_meas: np.ndarray,        # (3,) measured R^T e3
     ):
         """
-        Intrinsic EKF on SO(3) with two direction measurements (e1, e3).
+        Intrinsic EKF on SO(3) with two direction measurements.
 
         Discretization (ΔT in the correction):
             R_k^- = R_{k-1} · exp(ΔT · Ω_{k-1})
@@ -1370,7 +1687,7 @@ class RigidBodySim:
         R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1)
 
         # 2) Linearize at predicted-minus attitude (H_k at R_k^-)
-        A_km1, G_km1, H_km1 = self.linearization_attitude_kinematics(DeltaT, Omega_km1, R_pred_minus)
+        A_km1, G_km1, H_km1 = self._linearization_attitude_kinematics(DeltaT, Omega_km1, R_pred_minus)
 
         # 3) Covariance prediction
         P_pred_minus = A_km1 @ P_previous @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
