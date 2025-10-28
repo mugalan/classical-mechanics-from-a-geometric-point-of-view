@@ -1224,7 +1224,7 @@ class RigidBodySim:
 
     # --- EKF predict/update (intrinsic, e1 & e3) ---
 
-    def predict_update(
+    def predict_update_attitude(
         self,
         DeltaT: float,
         Omega_km1: np.ndarray,       # body ang. vel. (as per your convention for A)
