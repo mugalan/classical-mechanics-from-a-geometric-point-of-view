@@ -1324,7 +1324,6 @@ class RigidBodySim:
 
         return A_km1, G_km1, H_km1
 
-
     # --- EKF predict/update (intrinsic, e1 & e3) ---
 
     def predict_update_attitude(
