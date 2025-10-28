@@ -944,7 +944,8 @@ class RigidBodySim:
         return Xout
 
     def runga_kutta_method(self, dt, Tmax, parameters, ICs):
-        M, II = parameters['M'], parameters['II']
+        M = parameters.get('M',1)
+        II = parameters.get('II',np.eye(3))
         invII = np.linalg.inv(II)
         timeSteps = np.arange(0, Tmax+dt, dt)
         X=ICs;
