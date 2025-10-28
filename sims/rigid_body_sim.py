@@ -1398,7 +1398,7 @@ class RigidBodySim:
         th_max = np.deg2rad(5.0)
         if th > th_max and th > 0:
             delta *= (th_max/th)
-        R_pred = R_minus @ self.exp_map(delta)
+        R_pred = R_pred_minus @ self.exp_map(delta)
 
 
         # 7) Covariance update (Joseph + symmetrize)
