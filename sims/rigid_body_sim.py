@@ -1300,7 +1300,7 @@ class RigidBodySim:
     def set_sensor(self, fn: Callable[..., tuple]) -> None: self.sensor = fn
     def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None: self.kf_innovation = fn
 
-    def linearization_AGH(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
+    def linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
         A_k-1 = I - dt * hat(Omega_{k-1})
         G_k-1 = sqrt(dt) * I
