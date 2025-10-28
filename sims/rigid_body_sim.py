@@ -1240,6 +1240,10 @@ class RigidBodySim:
         R^+ = R^- @ exp(dt * (K (y - y_hat)))
         P^+ = (I - K H) P^-         [or Joseph form, recommended]
         """
+        assert Sigma_q.shape == (3,3)
+        assert Sigma_m.shape == (6,6)
+        assert A_n_meas.shape == (3,)
+        assert A_g_meas.shape == (3,)        
         # 1) State prediction
         R_pred_minus = self.R_pred @ self.exp_map(DeltaT * Omega_km1)
 
