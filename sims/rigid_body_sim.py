@@ -1312,7 +1312,8 @@ class RigidBodySim:
         R = np.asarray(R_for_H, float).reshape(3, 3)
 
         # A and G
-        A_km1 = I3 - DeltaT * self.hat_matrix(Omega)
+        # A_km1 = I3 - DeltaT * self.hat_matrix(Omega)
+        A_km1 = self.exp_map(-DeltaT * Omega)  # exact Adjoint
         G_km1 = (DeltaT ** 0.5) * I3
 
         # H using e1 & e3
