@@ -191,7 +191,10 @@ class RigidBodySim:
             n  = phi / th
             q0 = np.cos(th/2.0)
             qv = np.sin(th/2.0) * n
-        return self.r_from_quaternions(np.concatenate(([q0], qv)))
+
+        q = np.concatenate(([q0], qv))
+        q /= np.linalg.norm(q)
+        return self.r_from_quaternions(q)
 
     def re3_equals_gamma(self, gamma):
         """
@@ -1190,11 +1193,8 @@ class RigidBodySim:
 
     # --- EKF ---
 
-    def set_sensor(self, fn: Callable[..., tuple]) -> None:
-        self.sensor=fn
-
-    def set_KF_innovation(self, fn: Callable[..., tuple]) -> None:
-        self.kf_innovation=fn
+    def set_sensor(self, fn: Callable[..., tuple]) -> None: self.sensor = fn
+    def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None: self.kf_innovation = fn
 
     def linearization_AGH(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
@@ -1226,51 +1226,57 @@ class RigidBodySim:
     def predict_update_attitude(
         self,
         DeltaT: float,
-        Omega_km1: np.ndarray,       # body ang. vel. (as per your convention for A)
-        Sigma_q: np.ndarray,         # process noise cov (3x3) for gyro/process
-        Sigma_m: np.ndarray,         # measurement noise cov (6x6) for stacked (e1, e3)
-        A_n_meas: np.ndarray,        # measured R^T e1  (from IMU)
-        A_g_meas: np.ndarray,        # measured R^T e3  (from IMU)
+        Omega_km1: np.ndarray,       # body angular velocity (for A)
+        Sigma_q: np.ndarray,         # (3x3) process noise cov (gyro PSD discretized)
+        Sigma_m: np.ndarray,         # (6x6) meas. noise cov for [R^T e1; R^T e3]
+        A_n_meas: np.ndarray,        # measured R^T e1 (3,)
+        A_g_meas: np.ndarray,        # measured R^T e3 (3,)
     ):
         """
-        Implements:
-        R^- = R @ exp(dt * Omega)
-        P^- = A P A^T + G Σ_q G^T
+        Continuous-observer discretization (ΔT in correction):
+        R^- = R @ exp(ΔT * Ω_{k-1})
+        P^- = A P A^T + G Σ_q G^T,   A = I - ΔT hat(Ω_{k-1}),  G = √ΔT I
+        H   = [-hat(R^-T e1); -hat(R^-T e3)]
         K   = P^- H^T (H P^- H^T + Σ_m)^{-1}
-        R^+ = R^- @ exp(dt * (K (y - y_hat)))
-        P^+ = (I - K H) P^-         [or Joseph form, recommended]
+        R^+ = R^- @ exp(ΔT * (K (y - y_hat^-)))
+        P^+ = (I - K H) P^- (I - K H)^T + K Σ_m K^T
         """
-        assert Sigma_q.shape == (3,3)
-        assert Sigma_m.shape == (6,6)
+        # --- basic shape checks
+        assert Sigma_q.shape == (3, 3)
+        assert Sigma_m.shape == (6, 6)
         assert A_n_meas.shape == (3,)
-        assert A_g_meas.shape == (3,)        
+        assert A_g_meas.shape == (3,)
+
+        I3 = np.eye(3)
+
         # 1) State prediction
         R_pred_minus = self.R_pred @ self.exp_map(DeltaT * Omega_km1)
 
-        # 2) Linearize at predicted-minus attitude for measurement update
+        # 2) Linearize at predicted-minus attitude
         A_km1, G_km1, H_km1 = self.linearization_AGH(DeltaT, Omega_km1, R_pred_minus)
 
         # 3) Covariance prediction
         P_pred_minus = A_km1 @ self.P_pred @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
 
-        # 4) Innovation
-        L = self.kf_innovation(R_pred_minus, A_n_meas, A_g_meas)  # (6,)
+        # 4) Innovation (expects (6,1) or (6,))
+        L = self.kf_innovation(R_pred_minus, A_n_meas, A_g_meas)  # (6,1) or (6,)
 
-        # 5) Kalman gain (note: NO G in the measurement covariance)
-        S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m      # (6x6)
-        K = P_pred_minus @ H_km1.T @ np.linalg.inv(S)     # (3x6)
+        # 5) Kalman gain (use solve; symmetrize S for numerics)
+        S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m            # (6x6)
+        S = 0.5 * (S + S.T)                                     # enforce symmetry
+        # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-)   → K = [(S^T)\(H P^-)]^T
+        K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T      # (3x6)
 
         # 6) State update on SO(3)
-        delta = DeltaT * (K @ L)                          # (3,)
+        delta = (DeltaT * (K @ L)).reshape(3,)                  # ensure flat (3,)
         R_pred = R_pred_minus @ self.exp_map(delta)
 
-        # 7) Covariance update (Joseph form recommended for SPD robustness)
-        I3 = np.eye(3)
-        # Simple form:
-        # P_pred = (I3 - K @ H_km1) @ P_pred_minus
-        # Joseph-stabilized:
+        # 7) Covariance update (Joseph form + symmetrize)
         IKH = (I3 - K @ H_km1)
         P_pred = IKH @ P_pred_minus @ IKH.T + K @ Sigma_m @ K.T
-        self.R_pred=R_pred
-        self.P_pred=P_pred
+        P_pred = 0.5 * (P_pred + P_pred.T)
+
+        # store & return
+        self.R_pred = R_pred
+        self.P_pred = P_pred
         return R_pred, P_pred, K, H_km1, S
