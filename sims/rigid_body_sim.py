@@ -1630,6 +1630,7 @@ class RigidBodySim:
 
         # A and G
         A_km1 = I3 - DeltaT * self.hat_matrix(Omega)
+        A_km1 = self.exp_map(DeltaT * Omega)
         G_km1 = (DeltaT ** 0.5) * I3
 
         # H using e1 & e3
@@ -1702,7 +1703,8 @@ class RigidBodySim:
         K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
         # 6) correction with dt and clamp
-        delta = (DeltaT * (K @ L)).reshape(3,)
+        # delta = (DeltaT * (K @ L)).reshape(3,)
+        delta = ((K @ L)).reshape(3,)
         # n = np.linalg.norm(delta)
         # if n > 0.2:       # ~11.5 deg cap
         #     delta *= 0.2 / n
