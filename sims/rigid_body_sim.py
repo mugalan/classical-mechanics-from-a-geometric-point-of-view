@@ -1389,8 +1389,17 @@ class RigidBodySim:
         # delta = (DeltaT * (K @ L)).reshape(3,)          # ensure flat (3,)
         # R_pred = R_pred_minus @ self.exp_map(delta)
         # 6) State update on SO(3)  (DISCRETE update — no ΔT here)
-        delta = (K @ L).reshape(3,)          # (3,)
-        R_pred = R_pred_minus @ self.exp_map(delta)
+        # delta = (K @ L).reshape(3,)          # (3,)
+        # R_pred = R_pred_minus @ self.exp_map(delta)
+
+        # 6) correction with dt and clamp
+        delta = (DeltaT * (K @ L)).reshape(3,)
+        th = np.linalg.norm(delta)
+        th_max = np.deg2rad(5.0)
+        if th > th_max and th > 0:
+            delta *= (th_max/th)
+        R_pred = R_minus @ self.exp_map(delta)
+
 
         # 7) Covariance update (Joseph + symmetrize)
         IKH = (I3 - K @ H_km1)
