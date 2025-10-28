@@ -968,7 +968,7 @@ class RigidBodySim:
             - dp   = external + actuator forces,
             - dspi = external + actuator torques (spatial spin rate),
             - dXc  = derivative of controller/aux state.
-        • `rk4_function(dtk, X, tk, Xk, parameters)`:
+        • `_rk4_function(dtk, X, tk, Xk, parameters)`:
             returns an intermediate state used as RK stages.
 
         Model parameters
@@ -983,10 +983,10 @@ class RigidBodySim:
 
         Algorithm (per step)
         --------------------
-        1) Build three intermediate stage states with `rk4_function`:
-            Y1 = rk4_function(0.5·dt, X, t,          X,  parameters)
-            Y2 = rk4_function(0.5·dt, X, t+0.5·dt,   Y1, parameters)
-            Y3 = rk4_function(    dt, X, t+0.5·dt,   Y2, parameters)
+        1) Build three intermediate stage states with `_rk4_function`:
+            Y1 = _rk4_function(0.5·dt, X, t,          X,  parameters)
+            Y2 = _rk4_function(0.5·dt, X, t+0.5·dt,   Y1, parameters)
+            Y3 = _rk4_function(    dt, X, t+0.5·dt,   Y2, parameters)
         Then evaluate `rigid_body_system` at [X, Y1, Y2, Y3] to obtain
         four stage tuples (theta_i, n_i, doto_i, dp_i, dspi_i, dXc_i).
 
@@ -1058,9 +1058,9 @@ class RigidBodySim:
 
         self.state=ICs
         for t in timeSteps:
-            Y1 = self.rk4_function(0.5*dt, X, t, X, parameters)
-            Y2 = self.rk4_function(0.5*dt, X, t+0.5*dt, Y1, parameters)
-            Y3 = self.rk4_function(dt, X, t+0.5*dt, Y2, parameters)
+            Y1 = self._rk4_function(0.5*dt, X, t, X, parameters)
+            Y2 = self._rk4_function(0.5*dt, X, t+0.5*dt, Y1, parameters)
+            Y3 = self._rk4_function(dt, X, t+0.5*dt, Y2, parameters)
 
             values = [self.rigid_body_system(parameters, t+i*dt, X_j) for i, X_j in enumerate([X, Y1, Y2, Y3])]
             thetas, n_omegas, dotos, dps, dspis, dXcs = zip(*values)
@@ -1082,7 +1082,7 @@ class RigidBodySim:
         self.trajectory=Xout    
         return Xout
 
-    def rk4_function(self, dtk, X, tk, Xk, parameters):
+    def _rk4_function(self, dtk, X, tk, Xk, parameters):
         M, II = parameters['M'], parameters['II']
         thetaomega1, nomega1, doto1, dp1, dspi1, dXc1 = self.rigid_body_system(parameters, tk, Xk)
         qomega1 = np.concatenate(([np.cos(dtk*thetaomega1/2)], np.sin(dtk*thetaomega1/2) * nomega1))
