@@ -1385,8 +1385,11 @@ class RigidBodySim:
         # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-) → K = [(S^T)\(H P^-)]^T
         K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
-        # 6) State update on SO(3)
-        delta = (DeltaT * (K @ L)).reshape(3,)          # ensure flat (3,)
+        # # 6) State update on SO(3)
+        # delta = (DeltaT * (K @ L)).reshape(3,)          # ensure flat (3,)
+        # R_pred = R_pred_minus @ self.exp_map(delta)
+        # 6) State update on SO(3)  (DISCRETE update — no ΔT here)
+        delta = (K @ L).reshape(3,)          # (3,)
         R_pred = R_pred_minus @ self.exp_map(delta)
 
         # 7) Covariance update (Joseph + symmetrize)
