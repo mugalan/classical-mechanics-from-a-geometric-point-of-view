@@ -180,19 +180,18 @@ class RigidBodySim:
         phi = math.atan2(R[0, 1], R[0, 0])  # Rotation about z-axis
         return phi, 0, 0
 
-    def exp_map(self, omega):
-        '''
-        Computes the exponential of omega using the Euler-Rodrigues formula
-        \exp(\omega)\in SO(3)
-        '''
-        if np.linalg.norm(omega) >= 0.0001:
-            nomega = omega / np.linalg.norm(omega)
-            thetaomegat = np.linalg.norm(omega)
-            qomegat = np.concatenate(([np.cos(thetaomegat/2)], np.sin(thetaomegat/2) * nomega))
-            R = self.r_from_quaternions(qomegat)
+    def exp_map(self, phi):
+        phi = np.asarray(phi, float).reshape(3,)
+        th = np.linalg.norm(phi)
+        if th < 1e-8:
+            # small-angle quaternion approx: [1 - th^2/8, 0.5*phi]
+            q0 = 1.0 - (th*th)/8.0
+            qv = 0.5 * phi
         else:
-            R=np.eye(3)
-        return R
+            n  = phi / th
+            q0 = np.cos(th/2.0)
+            qv = np.sin(th/2.0) * n
+        return self.r_from_quaternions(np.concatenate(([q0], qv)))
 
     def re3_equals_gamma(self, gamma):
         """
