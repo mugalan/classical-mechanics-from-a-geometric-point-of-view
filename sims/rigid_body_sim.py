@@ -1169,145 +1169,6 @@ class RigidBodySim:
         self.trajectory=Xout
         return Xout
 
-    # def runga_kutta_method(self, dt, Tmax, parameters, ICs):
-    #     """
-    #     Integrate rigid-body pose and momenta with a Lie-group RK4-like stepper.
-
-    #     This routine advances the composite state
-    #         X = [[R, o], omega, p, Xc]
-    #     over t ∈ [0, Tmax] with step size `dt`, where:
-    #     - R ∈ ℝ^{3×3} is the attitude (rotation matrix, orthonormal),
-    #     - o ∈ ℝ^3 is the position,
-    #     - omega ∈ ℝ^3 is the body angular velocity,
-    #     - p ∈ ℝ^3 is the linear momentum,
-    #     - Xc is an optional controller/auxiliary state (shape free).
-
-    #     Dynamics/hooks
-    #     --------------
-    #     The method relies on two helpers you provide elsewhere in the class:
-    #     • `rigid_body_system(parameters, t, X)` → tuple
-    #         (theta_omega, n_omega, doto, dp, dspi, dXc)
-    #         where:
-    #         - theta_omega = ‖omega‖ (scalar),
-    #         - n_omega = omega / ‖omega‖ (unit axis, or 0 if tiny),
-    #         - doto = ṙo (linear velocity),
-    #         - dp   = external + actuator forces,
-    #         - dspi = external + actuator torques (spatial spin rate),
-    #         - dXc  = derivative of controller/aux state.
-    #     • `_rk4_function(dtk, X, tk, Xk, parameters)`:
-    #         returns an intermediate state used as RK stages.
-
-    #     Model parameters
-    #     ----------------
-    #     parameters : dict
-    #         - 'M'  (float)  : mass (default 1.0 if absent)
-    #         - 'II' (3×3 SPD): body inertia matrix (default I₃)
-    #         Any extra keys are passed through to your dynamics/controller.
-    #     ICs : list-like
-    #         Initial state in the same composite format as X:
-    #             ICs = [[R0, o0], omega0, p0, Xc0]
-
-    #     Algorithm (per step)
-    #     --------------------
-    #     1) Build three intermediate stage states with `_rk4_function`:
-    #         Y1 = _rk4_function(0.5·dt, X, t,          X,  parameters)
-    #         Y2 = _rk4_function(0.5·dt, X, t+0.5·dt,   Y1, parameters)
-    #         Y3 = _rk4_function(    dt, X, t+0.5·dt,   Y2, parameters)
-    #     Then evaluate `rigid_body_system` at [X, Y1, Y2, Y3] to obtain
-    #     four stage tuples (theta_i, n_i, doto_i, dp_i, dspi_i, dXc_i).
-
-    #     2) Rotational update on SO(3) (Lie-group increment):
-    #         omega_k ≈ (dt/6) · Σ_i (theta_i · n_i)     # stage-average angular velocity (unweighted sum)
-    #         q = (cos(‖omega_k‖/2), sin(‖omega_k‖/2)·hat(omega_k))
-    #         R ← r_from_quaternions(q) @ R              # left-multiply incremental rotation
-
-    #     NOTE: This implements a practical RK4-like angular increment; it is not a
-    #     strict classical RK4 weighting (1,2,2,1). See "Notes" below.
-
-    #     3) Translational/momentum/controller updates (stage means):
-    #         o  ← o  + dt · mean(doto_i)
-    #         p  ← p  + dt · mean(dp_i)
-    #         spi← (R_old II R_old^T)·omega_old + dt · mean(dspi_i)
-    #         Xc ← Xc + dt · mean(dXc_i)
-    #         omega ← (R II^{-1} R^T) · spi
-
-    #     4) Append the new state and continue.
-
-    #     Returns
-    #     -------
-    #     Xout : list
-    #         Sequence of states over the grid, including the initial state.
-    #         Length is len(np.arange(0, Tmax+dt, dt)) + 1.
-
-    #     Side effects
-    #     ------------
-    #     - Updates `self.state` each step to the most recent state.
-    #     - Stores the full trajectory in `self.trajectory` at the end.
-
-    #     Assumptions & requirements
-    #     --------------------------
-    #     - `II` must be symmetric positive definite; its inverse is computed once.
-    #     - The external/actuation effects are provided through your
-    #     `rigid_body_system` (which may internally call user-set hooks such as
-    #     `self.externalForceModel` and `self.actuator`).
-    #     - Small-angle handling for omega is robust via (theta, n) decomposition.
-
-    #     Notes
-    #     -----
-    #     • Rotation integration uses a Lie-group update (quaternion → R) to preserve
-    #     orthonormality of R exactly.
-    #     • Stage averaging for translation/momentum uses a simple arithmetic mean, and
-    #     rotational stage combination uses an unweighted sum in (dt/6)·Σ form.
-    #     If you require *strict* classical RK4 weights (1, 2, 2, 1), adapt the
-    #     stage accumulation accordingly.
-    #     • The time grid includes both 0 and Tmax (inclusive). With `dt` that does not
-    #     divide Tmax exactly, consider constructing the grid explicitly.
-
-    #     Example
-    #     -------
-    #     >>> params = {'M': 2.0, 'II': np.diag([0.1, 0.2, 0.3])}
-    #     >>> R0 = np.eye(3); o0 = np.zeros(3); omega0 = np.array([0.0, 0.0, 1.0])
-    #     >>> p0 = np.array([0.0, 0.0, 0.0]); Xc0 = np.zeros(3)
-    #     >>> ICs = [[R0, o0], omega0, p0, Xc0]
-    #     >>> traj = sim.runga_kutta_method(dt=0.01, Tmax=1.0, parameters=params, ICs=ICs)
-    #     >>> R1, o1 = traj[-1][0]
-    #     >>> np.allclose(R1.T @ R1, np.eye(3), atol=1e-12)
-    #     True
-    #     """
-
-    #     M = parameters.get('M',1)
-    #     II = parameters.get('II',np.eye(3))
-    #     invII = np.linalg.inv(II)
-    #     timeSteps = np.arange(0, Tmax+dt, dt)
-    #     X=ICs;
-    #     Xout=[X];
-
-    #     self.state=ICs
-    #     for t in timeSteps:
-    #         Y1 = self._rk4_function(0.5*dt, X, t, X, parameters)
-    #         Y2 = self._rk4_function(0.5*dt, X, t+0.5*dt, Y1, parameters)
-    #         Y3 = self._rk4_function(dt, X, t+0.5*dt, Y2, parameters)
-
-    #         values = [self.rigid_body_system(parameters, t+i*dt, X_j) for i, X_j in enumerate([X, Y1, Y2, Y3])]
-    #         thetas, n_omegas, dotos, dps, dspis, dXcs = zip(*values)
-
-    #         omegak = (dt/6.0) * sum(t * n for t, n in zip(thetas, n_omegas))
-    #         nomegak = omegak/np.linalg.norm(omegak) if np.linalg.norm(omegak) >= 0.0001 else np.array([0, 0, 0])
-    #         qomegak = np.concatenate(([np.cos(np.linalg.norm(omegak)/2)], np.sin(np.linalg.norm(omegak)/2) * nomegak))
-    #         Rk = self.r_from_quaternions(qomegak) @ X[0][0]
-
-    #         ok = X[0][1] + dt * np.mean(dotos)
-    #         pk = X[2] + dt * np.mean(dps)
-    #         spik = X[0][0] @ II @ X[0][0].T @ X[1] + dt * np.mean(dspis)
-    #         Xck = X[3] + dt * np.mean(dXcs)
-
-    #         omegak = Rk @ invII @ Rk.T @ spik
-    #         X = [[Rk, ok], omegak, pk, Xck]
-    #         Xout.append(X)
-    #         self.state=X
-    #     self.trajectory=Xout    
-    #     return Xout
-
     def runga_kutta_method(self, dt, Tmax, parameters, ICs):
         """
         Integrate a rigid body's pose and momenta with a **Lie-group RK4** stepper.
@@ -1468,7 +1329,6 @@ class RigidBodySim:
         self.trajectory = Xout
         return Xout
 
-
     def _rk4_function(self, dtk, X_base, tk, Xk, parameters, invII=None):
         """
         One RK substep: advance a state Xk forward by dtk using dynamics at (tk, Xk).
@@ -1500,18 +1360,6 @@ class RigidBodySim:
         Xc_next = Xck + dtk * dXc
 
         return [[R_next, o_next], omega_next, p_next, Xc_next]
-
-
-    # def _rk4_function(self, dtk, X, tk, Xk, parameters):
-    #     M, II = parameters['M'], parameters['II']
-    #     thetaomega1, nomega1, doto1, dp1, dspi1, dXc1 = self.rigid_body_system(parameters, tk, Xk)
-    #     qomega1 = np.concatenate(([np.cos(dtk*thetaomega1/2)], np.sin(dtk*thetaomega1/2) * nomega1))
-    #     R1 = self.r_from_quaternions(qomega1) @ X[0][0]
-    #     p1 = X[2] + dtk * dp1
-    #     spi1 = X[0][0] @ II @ X[0][0].T @ X[1] + dtk * dspi1
-    #     omega1 = R1 @ np.linalg.inv(II) @ R1.T @ spi1
-    #     X1 = [[R1, X[0][1] + dtk * doto1], omega1, p1, X[3] + dtk * dXc1]
-    #     return X1
 
     def simulating_a_cube(self, dt, Tmax, cubeDimensions, parameters,ICs):
         XX=self.cube_vertices(cubeDimensions);
@@ -1910,3 +1758,157 @@ class RigidBodySim:
         P_pred = 0.5 * (P_pred + P_pred.T)
 
         return R_pred, P_pred, K, H_km1, S
+
+
+##### Dont Delete
+
+
+    # def runga_kutta_method(self, dt, Tmax, parameters, ICs):
+    #     """
+    #     Integrate rigid-body pose and momenta with a Lie-group RK4-like stepper.
+
+    #     This routine advances the composite state
+    #         X = [[R, o], omega, p, Xc]
+    #     over t ∈ [0, Tmax] with step size `dt`, where:
+    #     - R ∈ ℝ^{3×3} is the attitude (rotation matrix, orthonormal),
+    #     - o ∈ ℝ^3 is the position,
+    #     - omega ∈ ℝ^3 is the body angular velocity,
+    #     - p ∈ ℝ^3 is the linear momentum,
+    #     - Xc is an optional controller/auxiliary state (shape free).
+
+    #     Dynamics/hooks
+    #     --------------
+    #     The method relies on two helpers you provide elsewhere in the class:
+    #     • `rigid_body_system(parameters, t, X)` → tuple
+    #         (theta_omega, n_omega, doto, dp, dspi, dXc)
+    #         where:
+    #         - theta_omega = ‖omega‖ (scalar),
+    #         - n_omega = omega / ‖omega‖ (unit axis, or 0 if tiny),
+    #         - doto = ṙo (linear velocity),
+    #         - dp   = external + actuator forces,
+    #         - dspi = external + actuator torques (spatial spin rate),
+    #         - dXc  = derivative of controller/aux state.
+    #     • `_rk4_function(dtk, X, tk, Xk, parameters)`:
+    #         returns an intermediate state used as RK stages.
+
+    #     Model parameters
+    #     ----------------
+    #     parameters : dict
+    #         - 'M'  (float)  : mass (default 1.0 if absent)
+    #         - 'II' (3×3 SPD): body inertia matrix (default I₃)
+    #         Any extra keys are passed through to your dynamics/controller.
+    #     ICs : list-like
+    #         Initial state in the same composite format as X:
+    #             ICs = [[R0, o0], omega0, p0, Xc0]
+
+    #     Algorithm (per step)
+    #     --------------------
+    #     1) Build three intermediate stage states with `_rk4_function`:
+    #         Y1 = _rk4_function(0.5·dt, X, t,          X,  parameters)
+    #         Y2 = _rk4_function(0.5·dt, X, t+0.5·dt,   Y1, parameters)
+    #         Y3 = _rk4_function(    dt, X, t+0.5·dt,   Y2, parameters)
+    #     Then evaluate `rigid_body_system` at [X, Y1, Y2, Y3] to obtain
+    #     four stage tuples (theta_i, n_i, doto_i, dp_i, dspi_i, dXc_i).
+
+    #     2) Rotational update on SO(3) (Lie-group increment):
+    #         omega_k ≈ (dt/6) · Σ_i (theta_i · n_i)     # stage-average angular velocity (unweighted sum)
+    #         q = (cos(‖omega_k‖/2), sin(‖omega_k‖/2)·hat(omega_k))
+    #         R ← r_from_quaternions(q) @ R              # left-multiply incremental rotation
+
+    #     NOTE: This implements a practical RK4-like angular increment; it is not a
+    #     strict classical RK4 weighting (1,2,2,1). See "Notes" below.
+
+    #     3) Translational/momentum/controller updates (stage means):
+    #         o  ← o  + dt · mean(doto_i)
+    #         p  ← p  + dt · mean(dp_i)
+    #         spi← (R_old II R_old^T)·omega_old + dt · mean(dspi_i)
+    #         Xc ← Xc + dt · mean(dXc_i)
+    #         omega ← (R II^{-1} R^T) · spi
+
+    #     4) Append the new state and continue.
+
+    #     Returns
+    #     -------
+    #     Xout : list
+    #         Sequence of states over the grid, including the initial state.
+    #         Length is len(np.arange(0, Tmax+dt, dt)) + 1.
+
+    #     Side effects
+    #     ------------
+    #     - Updates `self.state` each step to the most recent state.
+    #     - Stores the full trajectory in `self.trajectory` at the end.
+
+    #     Assumptions & requirements
+    #     --------------------------
+    #     - `II` must be symmetric positive definite; its inverse is computed once.
+    #     - The external/actuation effects are provided through your
+    #     `rigid_body_system` (which may internally call user-set hooks such as
+    #     `self.externalForceModel` and `self.actuator`).
+    #     - Small-angle handling for omega is robust via (theta, n) decomposition.
+
+    #     Notes
+    #     -----
+    #     • Rotation integration uses a Lie-group update (quaternion → R) to preserve
+    #     orthonormality of R exactly.
+    #     • Stage averaging for translation/momentum uses a simple arithmetic mean, and
+    #     rotational stage combination uses an unweighted sum in (dt/6)·Σ form.
+    #     If you require *strict* classical RK4 weights (1, 2, 2, 1), adapt the
+    #     stage accumulation accordingly.
+    #     • The time grid includes both 0 and Tmax (inclusive). With `dt` that does not
+    #     divide Tmax exactly, consider constructing the grid explicitly.
+
+    #     Example
+    #     -------
+    #     >>> params = {'M': 2.0, 'II': np.diag([0.1, 0.2, 0.3])}
+    #     >>> R0 = np.eye(3); o0 = np.zeros(3); omega0 = np.array([0.0, 0.0, 1.0])
+    #     >>> p0 = np.array([0.0, 0.0, 0.0]); Xc0 = np.zeros(3)
+    #     >>> ICs = [[R0, o0], omega0, p0, Xc0]
+    #     >>> traj = sim.runga_kutta_method(dt=0.01, Tmax=1.0, parameters=params, ICs=ICs)
+    #     >>> R1, o1 = traj[-1][0]
+    #     >>> np.allclose(R1.T @ R1, np.eye(3), atol=1e-12)
+    #     True
+    #     """
+
+    #     M = parameters.get('M',1)
+    #     II = parameters.get('II',np.eye(3))
+    #     invII = np.linalg.inv(II)
+    #     timeSteps = np.arange(0, Tmax+dt, dt)
+    #     X=ICs;
+    #     Xout=[X];
+
+    #     self.state=ICs
+    #     for t in timeSteps:
+    #         Y1 = self._rk4_function(0.5*dt, X, t, X, parameters)
+    #         Y2 = self._rk4_function(0.5*dt, X, t+0.5*dt, Y1, parameters)
+    #         Y3 = self._rk4_function(dt, X, t+0.5*dt, Y2, parameters)
+
+    #         values = [self.rigid_body_system(parameters, t+i*dt, X_j) for i, X_j in enumerate([X, Y1, Y2, Y3])]
+    #         thetas, n_omegas, dotos, dps, dspis, dXcs = zip(*values)
+
+    #         omegak = (dt/6.0) * sum(t * n for t, n in zip(thetas, n_omegas))
+    #         nomegak = omegak/np.linalg.norm(omegak) if np.linalg.norm(omegak) >= 0.0001 else np.array([0, 0, 0])
+    #         qomegak = np.concatenate(([np.cos(np.linalg.norm(omegak)/2)], np.sin(np.linalg.norm(omegak)/2) * nomegak))
+    #         Rk = self.r_from_quaternions(qomegak) @ X[0][0]
+
+    #         ok = X[0][1] + dt * np.mean(dotos)
+    #         pk = X[2] + dt * np.mean(dps)
+    #         spik = X[0][0] @ II @ X[0][0].T @ X[1] + dt * np.mean(dspis)
+    #         Xck = X[3] + dt * np.mean(dXcs)
+
+    #         omegak = Rk @ invII @ Rk.T @ spik
+    #         X = [[Rk, ok], omegak, pk, Xck]
+    #         Xout.append(X)
+    #         self.state=X
+    #     self.trajectory=Xout    
+    #     return Xout
+
+    # def _rk4_function(self, dtk, X, tk, Xk, parameters):
+    #     M, II = parameters['M'], parameters['II']
+    #     thetaomega1, nomega1, doto1, dp1, dspi1, dXc1 = self.rigid_body_system(parameters, tk, Xk)
+    #     qomega1 = np.concatenate(([np.cos(dtk*thetaomega1/2)], np.sin(dtk*thetaomega1/2) * nomega1))
+    #     R1 = self.r_from_quaternions(qomega1) @ X[0][0]
+    #     p1 = X[2] + dtk * dp1
+    #     spi1 = X[0][0] @ II @ X[0][0].T @ X[1] + dtk * dspi1
+    #     omega1 = R1 @ np.linalg.inv(II) @ R1.T @ spi1
+    #     X1 = [[R1, X[0][1] + dtk * doto1], omega1, p1, X[3] + dtk * dXc1]
+    #     return X1
