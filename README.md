@@ -1,20 +1,15 @@
 # rigid-body-sim (sims)
 
+This is a compilation of a set of interactive notes and supplementary material for teaching and learning Mechanics.
 
-This is a compilation of a set of interactive notes and supplimentary material for teaching and learning Mechanics.
+They have been the source for the undergraduate courses CE1010, ME211, ME320, ME301, ME327, ME518 offered by the Department of Mechanical Engineering at the University of Peradeniya.
 
-They have been the source for the undergraduate courses CE1010, ME211, ME320, ME301, ME327, ME518 offerd by the Department of Mechanical Engineeign at the University of Peradeniya.
-
-D. H. S. Maithripala, PhD.
-
-smaithri@eng.pdn.ac.lk
-
-https://eng.pdn.ac.lk/ME/People/FacultyProfiles.php?id=6
-
+**D. H. S. Maithripala, PhD.**  
+smaithri@eng.pdn.ac.lk  
+https://eng.pdn.ac.lk/ME/People/FacultyProfiles.php?id=6  
 https://orcid.org/0000-0002-8200-2696
 
-
-It also contains Lightweight Python utilities for rigid‑body simulations and simple dynamical system demos — with Plotly animations and quaternion/rotation helpers.
+It also contains lightweight Python utilities for rigid‑body simulations and simple dynamical system demos — with Plotly animations and quaternion/rotation helpers.
 
 > Package import: `import sims` → `sims.RigidBodySim`
 
@@ -38,7 +33,7 @@ It also contains Lightweight Python utilities for rigid‑body simulations and s
   - Custom integrators: Euler and RK4 pipeline for a rigid body state.
 - Convenience geometry: cube-vertex generator and “simulate a cube” pipeline.
 
-> Heads-up: your original class had a duplicate `add_orth_norm_frame` method and a likely typo `r_from_quaternionsns` → `r_from_quaternions`. The examples below assume those are fixed.
+> Heads-up: the original class had a duplicate `add_orth_norm_frame` and a likely typo `r_from_quaternionsns` → `r_from_quaternions`. The examples below assume those are fixed.
 
 ---
 
@@ -187,7 +182,6 @@ t, sol, fig = rb.simulate_dy_system(
     y_label="states"
 )
 ```
-
 > Internally uses `scipy.integrate.odeint` and returns `(t, sol, fig)`.
 
 ---
@@ -204,8 +198,6 @@ Register your physics hooks first:
   - `fn(self, parameters, t, X, tau_e, f_e) -> (tau_a, f_a)`
 
 All returned vectors must be length-3. If a hook is not set, the integrators default to zeros for that hook.
-
-The integrators expect a composite state:
 
 The integrators expect a composite state:
 ```
@@ -237,7 +229,7 @@ params = {"M": M, "II": II}
 
 # Initial state
 R0     = np.eye(3)
-o0     = np.array([0.0, 0.0, 0.0])
+o0     = np.zeros(3)
 omega0 = np.array([0.0, 0.0, 5.0])   # initial angular velocity
 doto0  = np.array([0.2, 0.0, 0.0])   # initial linear velocity (p/M)
 Xc0    = np.zeros(3)
@@ -246,7 +238,7 @@ ICs = [[R0, o0], omega0, doto0, Xc0]
 
 # Integrate (Euler or RK4)
 dt, Tmax = 0.02, 1.0
-# euler_states = rb.eulers_method(dt, Tmax, params, ICs)  # (ensure typo fix: r_from_quaternions)
+# euler_states = rb.eulers_method(dt, Tmax, params, ICs)
 rk_states   = rb.runga_kutta_method(dt, Tmax, params, ICs)
 
 # Turn states into cube frames and animate
@@ -262,7 +254,201 @@ for X in rk_states:
 rb.animated_cube_flat_shading(frames, "Rigid Body RK4 Demo")
 ```
 
-> **Important:** Fix `eulers_method` to call `self.r_from_quaternions(...)` (remove the `ns`) and ensure your `externalForceModel`/`actuator` are resolvable in the method’s scope (module-level or passed in).
+> **Important:** Ensure `eulers_method` calls `self.r_from_quaternions(...)` (remove the `ns`).
+
+---
+
+## 🧭 Discrete Intrinsic EKF (DEKF) on SO(3)
+
+This package includes a lightweight **discrete, right-invariant EKF** for attitude using two stacked direction measurements (e.g., magnetometer + gravity). It runs directly on **SO(3)** and updates the estimate by **right-multiplying** a small exponential.
+
+### Model & Notation (SO(3))
+
+- State: attitude \(R_k \in \mathrm{SO}(3)\)
+- Propagation (body rate \(\Omega_{k-1}\) in rad/s):
+  \[
+  \widetilde R_k^- \,=\, \widetilde R_{k-1}\,\exp\!\big(\Delta T\,\widehat{\Omega}_{k-1}\big)
+  \]
+- Measurement (two known inertial directions \(e_1,e_3\in\mathbb S^2\)):
+  \[
+  y_k \,=\, 
+  \begin{bmatrix}
+  R_k^{\!\top} e_1\\[2pt]
+  R_k^{\!\top} e_3
+  \end{bmatrix}\in\mathbb R^{6},\qquad
+  \hat y_k^- \,=\,
+  \begin{bmatrix}
+  \widetilde R_k^{-\top} e_1\\[2pt]
+  \widetilde R_k^{-\top} e_3
+  \end{bmatrix}
+  \]
+- Right-invariant residual (in tangent):
+  \[
+  r_k \,\approx\,
+  \begin{bmatrix}
+  \hat y_{1,k}^- \times y_{1,k}\\
+  \hat y_{3,k}^- \times y_{3,k}
+  \end{bmatrix}\in\mathbb R^{6}
+  \]
+
+### Linearizations
+
+Let \(\operatorname{ad}_\omega(\cdot)=\widehat\omega(\cdot)=\omega\times (\cdot)\). For a small step \(\Delta T\):
+
+\[
+A_{k-1}=\exp(-\Delta T\,\widehat{\Omega}_{k-1}),\quad
+G_{k-1}=\sqrt{\Delta T}\,I_3\ \text{(or } \sqrt{\Delta T}\,\psi(\operatorname{ad}_{\Delta T\Omega})\text{ for higher fidelity)},
+\]
+\[
+H_k =
+\begin{bmatrix}
+-\widehat{\widetilde R_k^{-\top} e_1}\\
+-\widehat{\widetilde R_k^{-\top} e_3}
+\end{bmatrix}\in\mathbb R^{6\times 3}.
+\]
+
+### Filter Recursions
+
+- **Predict**
+  \[
+  P_k^- = A_{k-1} P_{k-1} A_{k-1}^{\!\top} + G_{k-1} \,\Sigma_q\, G_{k-1}^{\!\top}
+  \]
+- **Gain / Update**
+  \[
+  K_k = P_k^- H_k^{\!\top}\big(H_k P_k^- H_k^{\!\top}+\Sigma_m\big)^{-1},\quad
+  \widetilde R_k=\widetilde R_k^-\,\exp\!\big(\Delta T\,K_k\,r_k\big),
+  \]
+  \[
+  P_k = (I-K_k H_k)P_k^- (I-K_k H_k)^{\!\top} + K_k \Sigma_m K_k^{\!\top}\quad\text{(Joseph form)}
+  \]
+
+### Typical Noise Settings (tune to hardware)
+
+- Gyro white noise \(\sigma_\omega\)[rad/s]: **1e-4 … 2e-2** (good MEMS ~1e-3 … 5e-3)  
+- Direction component noise \(\sigma_{\text{dir}}\) [-]: **5e-3 … 1e-1** (≈0.3°…5.7° per axis)  
+- Initial attitude 1-σ (deg): **1° … 20°**
+
+Recommended covariances:
+```python
+sigma_omega = 3e-3                      # rad/s
+sigma_dir   = 2e-2                      # unit-vector component stdev
+Sigma_q = (sigma_omega**2) * np.eye(3)  # process
+Sigma_m = (sigma_dir**2)   * np.eye(6)  # measurement (stacked two vectors)
+Sigma_p0 = (np.deg2rad(10.0)**2) * np.eye(3)  # prior attitude variance
+```
+
+### Quick Online Example
+
+```python
+import numpy as np
+import sims
+
+rb = sims.RigidBodySim()
+
+def sensor(R, omega_body, sigma_omega=3e-3, sigma_dir=2e-2, rng=None):
+    rng = rng or np.random.default_rng(0)
+    e1 = np.array([1.,0.,0.]); e3 = np.array([0.,0.,1.])
+    n3 = lambda s: rng.normal(0.0, s, size=3) if np.isscalar(s) else rng.normal(0.0, s, size=3)
+    Omega_meas = omega_body + n3(sigma_omega)
+    A_n_meas   = R.T @ e1 + n3(sigma_dir); A_n_meas /= max(np.linalg.norm(A_n_meas), 1e-12)
+    A_g_meas   = R.T @ e3 + n3(sigma_dir); A_g_meas /= max(np.linalg.norm(A_g_meas), 1e-12)
+    return Omega_meas, A_n_meas, A_g_meas
+
+def innovation(R_minus, A_n, A_g):
+    y1 = R_minus.T @ np.array([1.,0.,0.])
+    y3 = R_minus.T @ np.array([0.,0.,1.])
+    r1 = np.cross(y1, A_n); r3 = np.cross(y3, A_g)
+    return np.hstack([r1, r3]).reshape(-1,1)
+
+rb.set_sensor(sensor)
+rb.set_KF_innovation(innovation)
+
+sigma_omega, sigma_dir = 3e-3, 2e-2
+Sigma_q = (sigma_omega**2) * np.eye(3)
+Sigma_m = (sigma_dir**2)   * np.eye(6)
+Sigma_p0 = (np.deg2rad(10.0)**2) * np.eye(3)
+
+dt = 0.01
+steps = 1000
+omega_body_true = np.array([0.25, -0.05, 0.15])
+R_true = np.eye(3)
+R_hat  = np.eye(3)
+P_hat  = Sigma_p0.copy()
+
+for k in range(steps):
+    R_true = R_true @ rb.exp_map(dt * omega_body_true)
+    Omega_meas, A_n_meas, A_g_meas = rb.sensor(R_true, omega_body_true, sigma_omega, sigma_dir)
+    R_hat, P_hat, K, H, S = rb.predict_update_attitude(
+        DeltaT=dt, Omega_km1=Omega_meas,
+        R_previous=R_hat, P_previous=P_hat,
+        Sigma_q=Sigma_q, Sigma_m=Sigma_m,
+        A_n_meas=A_n_meas, A_g_meas=A_g_meas
+    )
+```
+
+### Offline Example (pre-generated trajectory + covariance plot)
+
+```python
+import numpy as np, plotly.graph_objects as go
+
+def angle_from_R(R):
+    c = float(np.clip((np.trace(R)-1.0)*0.5, -1.0, 1.0))
+    return np.arccos(c)
+
+# trajectory: list of states from rb.runga_kutta_method
+# Xk = [[R_k, o_k], omega_spatial_k, p_k, Xc_k]; DeltaT is the integrator step
+
+sigma_omega, sigma_dir = 1e-3, 2e-2
+Sigma_q = (sigma_omega**2) * np.eye(3)
+Sigma_m = (sigma_dir**2)   * np.eye(6)
+Sigma_p0 = (np.deg2rad(10.0)**2) * np.eye(3)
+
+mr.set_sensor(sensor)
+mr.set_KF_innovation(innovation)
+
+R_hat = trajectory[0][0][0]
+P_hat = Sigma_p0.copy()
+
+N = len(trajectory)
+t = np.arange(N) * DeltaT
+err_deg, trace_err, lam_max, ang_1sig = [], [], [], []
+
+for k in range(N):
+    R_true        = trajectory[k][0][0]
+    omega_spatial = trajectory[k][1]
+    omega_body    = R_true.T @ omega_spatial
+    Omega_meas, A_n_meas, A_g_meas = mr.sensor(R_true, omega_body, sigma_omega, sigma_dir)
+    R_hat, P_hat, K, H, S = mr.predict_update_attitude(
+        DeltaT=DeltaT, Omega_km1=Omega_meas,
+        R_previous=R_hat, P_previous=P_hat,
+        Sigma_q=Sigma_q, Sigma_m=Sigma_m,
+        A_n_meas=A_n_meas, A_g_meas=A_g_meas
+    )
+    R_err = R_hat.T @ R_true
+    err_deg.append(np.degrees(angle_from_R(R_err)))
+    trace_err.append(3.0 - np.trace(R_err))
+    w = np.linalg.eigvalsh(0.5*(P_hat+P_hat.T))
+    lam = float(w[-1]); lam_max.append(lam)
+    ang_1sig.append(np.degrees(np.sqrt(max(lam,0.0))))
+
+print(f"Final attitude error: {err_deg[-1]:.3f} deg,  √λ_max(P): {ang_1sig[-1]:.3f} deg")
+
+fig_cov = go.Figure()
+fig_cov.add_trace(go.Scatter(x=t, y=lam_max, mode="lines", name="λ_max(P) [rad²]"))
+fig_cov.add_trace(go.Scatter(x=t, y=ang_1sig, mode="lines", name="√λ_max(P) [deg]", yaxis="y2"))
+fig_cov.update_layout(
+    title="DEKF covariance magnitude (offline)",
+    xaxis_title="Time (s)",
+    yaxis=dict(title="Largest eigenvalue λ_max(P) [rad²]"),
+    yaxis2=dict(title="1σ angle √λ_max(P) [deg]", overlaying="y", side="right"),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0)
+)
+fig_cov.show()
+```
+
+**Tips**
+- Ensure both the generator and DEKF use **body** rate for \(\dot R = R\,\widehat{\Omega}_{\text{body}}\). If your trajectory stores **spatial** \(\omega\), convert via \(\Omega_{\text{body}} = R^\top \omega_{\text{spatial}}\).
+- If “error drifts while P shrinks,” check: (i) error matrix `R_err = R_hat.T @ R_true`, (ii) RK4 stage timing/weights, and (iii) signs in `H` and residual.
 
 ---
 
@@ -279,7 +465,7 @@ rb.animated_cube_flat_shading(frames, "Rigid Body RK4 Demo")
 
 - Quaternion from axis–angle (unit axis `n`, angle `θ`):
   \[
-    q = [\cos(\tfrac{\theta}{2}),\; \sin(\tfrac{\theta}{2})\,n]
+    q = [\cos(\tfrac{\theta}{2}),\ \sin(\tfrac{\theta}{2})\,n]
   \]
 
 - Rotation from quaternion (scalar–vector split `q = [q_0, w]`):
@@ -287,16 +473,6 @@ rb.animated_cube_flat_shading(frames, "Rigid Body RK4 Demo")
     R = I + 2 q_0\,\hat{w} + 2\,\hat{w}^2
   \]
 
----
-
-## 🧰 Troubleshooting
-
-
-- **Plotly not showing in some environments**: Ensure you run in a notebook or a context that can open the renderer (`fig.show()`).
-- **Sympy imports**: If unused in your minimal scripts, you can comment/remove to reduce startup overhead.
-
----
-
 ## 🔖 License
 
-MIT © <Your Name>
+MIT © DHS Maithripala
