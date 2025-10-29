@@ -1310,13 +1310,105 @@ class RigidBodySim:
 
     def runga_kutta_method(self, dt, Tmax, parameters, ICs):
         """
-        RK4 on a rigid body with Lie-group update for R. Fixes stage timing and weights.
+        Integrate a rigid body's pose and momenta with a **Lie-group RK4** stepper.
+
+        This integrator advances the composite state
+            X = [[R, o], omega, p, Xc]
+        over t ∈ [0, Tmax] using a fourth-order Runge–Kutta scheme that:
+        • updates attitude R ∈ SO(3) via a **left-increment** R ← exp(dt·ω̄) @ R
+            (preserves orthonormality by construction),
+        • updates translation, linear momentum, and auxiliary/controller state
+            with classical RK4 stage averaging.
+
+        ---------- State & Dynamics ----------
+        State layout:
+            R     : (3,3) rotation matrix (orthonormal, det=+1)
+            o     : (3,)  position
+            omega : (3,)  body angular velocity
+            p     : (3,)  linear momentum
+            Xc    : (...) auxiliary/controller state (any shape)
+
+        Required hooks on `self`:
+            rigid_body_system(parameters, t, X) -> tuple
+                Returns (theta, n, doto, dp, dspi, dXc) at (t, X), where
+                • theta = ||omega|| (scalar),
+                • n     = omega / ||omega|| (unit axis, zero if tiny),
+                • doto  = ȯ (linear velocity),
+                • dp    = ṗ (external/actuator forces),
+                • dspi  = spatial spin rate (time derivative of spatial angular momentum),
+                • dXc   = time derivative of Xc.
+                The product w := theta * n is treated as the **body angular rate** used
+                to build RK4 stage predictors on SO(3).
+            exp_map(v: (3,)) -> (3,3)
+                Exponential map on SO(3): exp_map(v) = exp(hat(v)).
+            r_from_quaternions / hat_matrix (optional elsewhere): not used here.
+
+        Parameters
+        ----------
+        dt : float
+            Fixed time step (seconds).
+        Tmax : float
+            Total simulated time horizon (seconds). The loop executes N=floor(Tmax/dt) steps.
+            Use ceil if you prefer to land exactly on Tmax.
+        parameters : dict
+            Model parameters; recognized keys:
+            • 'II' : (3,3) SPD body inertia matrix (default I3).
+            • Any additional keys are forwarded to `rigid_body_system`.
+        ICs : list/tuple
+            Initial composite state in the same layout as X: [[R0, o0], omega0, p0, Xc0].
+
+        Returns
+        -------
+        Xout : list
+            Sequence of states over the grid (length N+1), including the initial state `ICs`.
+            Each item has the layout [[R, o], omega, p, Xc].
+
+        Algorithm (per step)
+        --------------------
+        1) Evaluate k1 at (t, X).
+        2) Build stage predictor Y1 at t+dt/2 with exp(0.5·dt·w1) and Euler drifts; evaluate k2.
+        3) Build stage predictor Y2 at t+dt/2 with exp(0.5·dt·w2); evaluate k3.
+        4) Build stage predictor Y3 at t+dt with exp(dt·w3); evaluate k4.
+        5) Form RK4 weighted averages:
+            w̄   = (w1 + 2w2 + 2w3 + w4)/6,
+            d•̄  = (k1 + 2k2 + 2k3 + k4)/6 for each translational/momentum/controller rate.
+        6) Update:
+            R_new   = exp(dt·w̄) @ R,
+            o_new   = o   + dt·dō̄,
+            p_new   = p   + dt·dp̄,
+            spi_new = R II Rᵀ omega + dt·ds̄,
+            omega_new = R_new II⁻¹ R_newᵀ spi_new,
+            Xc_new  = Xc + dt·dXc̄.
+
+        Numerical Properties & Notes
+        ----------------------------
+        • SO(3) update is group-consistent and maintains RᵀR=I, det R=+1 up to machine precision.
+        • Stage times are (t, t+dt/2, t+dt/2, t+dt); weights (1,2,2,1)/6 (classical RK4).
+        • The angular stage vector w_i := theta_i n_i must represent a **body-frame** rate to
+        match the left-increment kinematics Ṙ = R·hat(omega_body).
+        • A small-angle safeguard is applied implicitly by exp_map; you may add an explicit check
+        if your exp_map assumes ||v|| > 0.
+
+        Caveats
+        -------
+        • If your dynamics produce **spatial** quantities, convert them to/from the body frame
+        consistently (this routine assumes body w_i and spatial momentum spin dynamics).
+        • The loop uses floor(Tmax/dt); consider adjusting if exact endpoint alignment is required.
+
+        Example
+        -------
+        >>> params = {'II': np.diag([0.1, 0.2, 0.3])}
+        >>> R0 = np.eye(3); o0 = np.zeros(3); omega0 = np.array([0.1, 0.0, 0.0])
+        >>> p0 = np.zeros(3); Xc0 = np.zeros(2)
+        >>> traj = sim.runga_kutta_method(0.01, 1.0, params, [[R0, o0], omega0, p0, Xc0])
+        >>> R1 = traj[-1][0][0]
+        >>> np.allclose(R1.T @ R1, np.eye(3), atol=1e-12)
+        True
         """
-        M  = parameters.get('M', 1.0)
         II = parameters.get('II', np.eye(3))
         invII = np.linalg.inv(II)
 
-        # time grid: do exactly ceil(Tmax/dt) steps; avoid +dt extra step
+        # steps: floor hits t in [0, N*dt); use ceil if you want to land on Tmax exactly
         N = int(np.floor(Tmax / dt + 1e-12))
         t0 = 0.0
 
@@ -1328,44 +1420,45 @@ class RigidBodySim:
             t = t0 + k*dt
             R, o, omega, p, Xc = X[0][0], X[0][1], X[1], X[2], X[3]
 
-            # --- build RK "stage states" (your helper can be kept if desired) ---
-            # Stage 1 dynamics at (t, X)
+            # k1 at (t, X)
             th1, n1, do1, dp1, ds1, dXc1 = self.rigid_body_system(parameters, t, X)
 
-            # Predict stage states for k2 and k3 at t+dt/2
-            # Use the angular vector th*n as the instantaneous body rate surrogate
+            # k2 from Y1 at t+dt/2
             w1 = th1 * n1
             Y1 = [[ self.exp_map(0.5*dt * w1) @ R, o + 0.5*dt*do1 ],
                 omega + 0.5*dt*w1, p + 0.5*dt*dp1, Xc + 0.5*dt*dXc1]
             th2, n2, do2, dp2, ds2, dXc2 = self.rigid_body_system(parameters, t + 0.5*dt, Y1)
 
+            # k3 from Y2 at t+dt/2
             w2 = th2 * n2
             Y2 = [[ self.exp_map(0.5*dt * w2) @ R, o + 0.5*dt*do2 ],
                 omega + 0.5*dt*w2, p + 0.5*dt*dp2, Xc + 0.5*dt*dXc2]
             th3, n3, do3, dp3, ds3, dXc3 = self.rigid_body_system(parameters, t + 0.5*dt, Y2)
 
-            # Stage 4 at t+dt using Y3 built with k3
+            # k4 from Y3 at t+dt
             w3 = th3 * n3
             Y3 = [[ self.exp_map(dt * w3) @ R, o + dt*do3 ],
                 omega + dt*w3, p + dt*dp3, Xc + dt*dXc3]
             th4, n4, do4, dp4, ds4, dXc4 = self.rigid_body_system(parameters, t + dt, Y3)
 
-            # --- RK4 weighted averages ---
-            w_bar   = (th1*n1 + 2.0*th2*n2 + 2.0*th3*n3 + th4*n4) / 6.0     # body rate average
-            do_bar  = (do1      + 2.0*do2   + 2.0*do3   + do4     ) / 6.0
-            dp_bar  = (dp1      + 2.0*dp2   + 2.0*dp3   + dp4     ) / 6.0
-            ds_bar  = (ds1      + 2.0*ds2   + 2.0*ds3   + ds4     ) / 6.0
-            dXc_bar = (dXc1     + 2.0*dXc2  + 2.0*dXc3  + dXc4    ) / 6.0
+            # RK4 weights
+            w_bar   = (th1*n1 + 2*th2*n2 + 2*th3*n3 + th4*n4) / 6.0
+            do_bar  = (do1     + 2*do2    + 2*do3    + do4   ) / 6.0
+            dp_bar  = (dp1     + 2*dp2    + 2*dp3    + dp4   ) / 6.0
+            ds_bar  = (ds1     + 2*ds2    + 2*ds3    + ds4   ) / 6.0
+            dXc_bar = (dXc1    + 2*dXc2   + 2*dXc3   + dXc4  ) / 6.0
 
-            # --- group-consistent updates ---
-            # 1) Attitude: left-increment with exp(dt * w_bar)
-            R_new = self.exp_map(dt * w_bar) @ R
+            # group-consistent updates
+            theta = np.linalg.norm(w_bar)
+            if theta > 1e-12:
+                R_new = self.exp_map(dt * w_bar) @ R
+            else:
+                R_new = R
 
-            # 2) Translational / momenta / controller
             o_new   = o   + dt * do_bar
             p_new   = p   + dt * dp_bar
-            spi_new = R @ II @ R.T @ omega + dt * ds_bar   # spatial angular momentum update
-            omega_new = R_new @ invII @ R_new.T @ spi_new  # recover body omega from spi at new frame
+            spi_new = R @ II @ R.T @ omega + dt * ds_bar
+            omega_new = R_new @ invII @ R_new.T @ spi_new
             Xc_new  = Xc + dt * dXc_bar
 
             X = [[R_new, o_new], omega_new, p_new, Xc_new]
@@ -1374,6 +1467,7 @@ class RigidBodySim:
 
         self.trajectory = Xout
         return Xout
+
 
     def _rk4_function(self, dtk, X_base, tk, Xk, parameters, invII=None):
         """
