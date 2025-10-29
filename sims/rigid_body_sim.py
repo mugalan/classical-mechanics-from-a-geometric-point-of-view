@@ -1619,7 +1619,7 @@ class RigidBodySim:
 
     def _linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
-        A_k-1 = I - dt * hat(Omega_{k-1})
+        A_k-1 = exp(- dt * hat(Omega_{k-1}))
         G_k-1 = sqrt(dt) * I
         H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
         Uses the identity R^T hat(e) R = hat(R^T e) for efficiency.
