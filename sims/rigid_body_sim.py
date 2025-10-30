@@ -1672,7 +1672,7 @@ class RigidBodySim:
 
         # A and G
         A_km1 = self.exp_map(-DeltaT * Omega)
-        G_km1 = (DeltaT ** 0.5) * (I3-DeltaT*self.hat_matrix(Omega))
+        G_km1 = (DeltaT ** 0.5) * (I3-0.5*DeltaT*self.hat_matrix(Omega))
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
