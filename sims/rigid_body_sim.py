@@ -1671,8 +1671,8 @@ class RigidBodySim:
         R = np.asarray(R_for_H, float).reshape(3, 3)
 
         # A and G
-        A_km1 = self.exp_map(-DeltaT * Omega)
-        G_km1 = (DeltaT ** 0.5) * (I3-0.5*DeltaT*self.hat_matrix(Omega))
+        A_km1 = np.eye(3) #self.exp_map(-DeltaT * Omega)
+        G_km1 = (DeltaT ** 0.5) * (I3-0.*DeltaT*self.hat_matrix(Omega))
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
@@ -1726,7 +1726,8 @@ class RigidBodySim:
         I3 = np.eye(3)
 
         # 1) State prediction
-        R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1)
+        # R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1) #Left invariant outputs
+        R_pred_minus = self.exp_map(DeltaT * Omega_km1) @ R_previous #Right invariant outputs
 
         # 2) Linearize at predicted-minus attitude (H_k at R_k^-)
         A_km1, G_km1, H_km1 = self._linearization_attitude_kinematics(DeltaT, Omega_km1, R_pred_minus)
