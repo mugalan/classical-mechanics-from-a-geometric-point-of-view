@@ -1726,8 +1726,7 @@ class RigidBodySim:
         I3 = np.eye(3)
 
         # 1) State prediction
-        # R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1) #Left invariant outputs
-        R_pred_minus = self.exp_map(DeltaT * Omega_km1) @ R_previous #Right invariant outputs
+        R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1) 
 
         # 2) Linearize at predicted-minus attitude (H_k at R_k^-)
         A_km1, G_km1, H_km1 = self._linearization_attitude_kinematics(DeltaT, Omega_km1, R_pred_minus)
@@ -1750,7 +1749,8 @@ class RigidBodySim:
         n = np.linalg.norm(delta)
         if n > 0.2:       # ~11.5 deg cap
             delta *= 0.2 / n
-        R_pred = R_pred_minus @ self.exp_map(delta)
+        # R_pred = R_pred_minus @ self.exp_map(delta) #Left invariant outputs
+        R_pred = self.exp_map(delta) @ R_pred_minus #Right invariant outputs
 
 
         # 7) Covariance update (Joseph + symmetrize)
