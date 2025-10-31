@@ -1733,7 +1733,7 @@ class RigidBodySim:
 
         Shapes:
             Ω, delta: (3,),  R: (3,3),  P, Σ_q: (3,3),  Σ_m, S: (9,9),
-            H: (9,3),  K: (3,9),  innovation L: (9,1) or (9,)
+            H: (6,3),  K: (3,6),  innovation L: (6,1) or (6,)
 
         Notes:
             • Ω must be **body-frame** gyro rate to match A’s definition.
@@ -1743,7 +1743,7 @@ class RigidBodySim:
         assert R_previous.shape == (3, 3)
         assert P_previous.shape == (3, 3)
         assert Sigma_q.shape == (3, 3)
-        assert Sigma_m.shape == (9, 9)
+        assert Sigma_m.shape == (6, 6)
         assert A_1_meas.shape == (3,)
         assert A_2_meas.shape == (3,)
         assert A_3_meas.shape == (3,)
