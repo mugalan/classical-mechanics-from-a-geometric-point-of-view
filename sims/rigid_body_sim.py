@@ -1743,7 +1743,7 @@ class RigidBodySim:
         assert R_previous.shape == (3, 3)
         assert P_previous.shape == (3, 3)
         assert Sigma_q.shape == (3, 3)
-        assert Sigma_m.shape == (6, 6)
+        assert Sigma_m.shape == (9, 9)
         assert A_1_meas.shape == (3,)
         assert A_2_meas.shape == (3,)
         assert A_3_meas.shape == (3,)
