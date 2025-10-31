@@ -1635,7 +1635,6 @@ class RigidBodySim:
         """
         self.sensor = fn
 
-
     def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None:
         """
         Register the **innovation function** L = y - ŷ used by the EKF update.
@@ -1773,8 +1772,8 @@ class RigidBodySim:
         K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
         # 6) correction with dt and clamp
-        # delta = (DeltaT * (K @ L)).reshape(3,)
-        delta = deltaT*((K @ L)).reshape(3,)
+        delta = (DeltaT * (K @ L)).reshape(3,)
+        # delta = ((K @ L)).reshape(3,)
         n = np.linalg.norm(delta)
         if n > 0.2:       # ~11.5 deg cap
             delta *= 0.2 / n
