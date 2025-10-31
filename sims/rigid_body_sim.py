@@ -1697,10 +1697,12 @@ class RigidBodySim:
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
+        e2 = np.array([0., 1., 0.])
         e3 = np.array([0., 0., 1.])
-        H1 = -self.hat_matrix(R.T @ e1)  
+        H1 = -self.hat_matrix(R.T @ e1) 
+        H2 = -self.hat_matrix(R.T @ e2) 
         H3 = -self.hat_matrix(R.T @ e3)
-        H_km1 = np.vstack([H1, H3])    # (6,3)
+        H_km1 = np.vstack([H1, H2, H3])    # (6,3)
 
         return A_km1, G_km1, H_km1
 
