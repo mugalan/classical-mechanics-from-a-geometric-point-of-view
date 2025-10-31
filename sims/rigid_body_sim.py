@@ -59,24 +59,26 @@ def hat(v: np.ndarray) -> np.ndarray:
                      [z, 0, -x],
                      [-y, x, 0]])
 
-    def _Phi_SO3(omega: np.ndarray, dt: float = 1.0) -> np.ndarray:
+    def _Phi_SO3(self, omega: np.ndarray) -> np.ndarray:
         """
-        Left Jacobian Φ(-dt * omega) on SO(3).
-        Returns a 3×3 matrix mapping perturbations in the body frame.
+        Left Jacobian Φ(omega) on SO(3).
+        Maps perturbations in the body frame.
+        Implements Φ(omega) = I + (1 - cosθ)/θ² * hat(omega)
+                            + (θ - sinθ)/θ³ * hat(omega)²
         """
         omega = np.asarray(omega, dtype=float).reshape(3,)
         I3 = np.eye(3)
-        theta = np.linalg.norm(omega) * dt
+        theta = np.linalg.norm(omega)
+
         if theta < 1e-8:
             # Small-angle Taylor expansion (accurate up to O(theta^3))
             w_hat = self.hat_matrix(omega)
-            return I3 - 0.5 * dt * w_hat + (dt**2 / 12.0) * (w_hat @ w_hat)
+            return I3 + 0.5 * w_hat + (1.0 / 12.0) * (w_hat @ w_hat)
         else:
             w_hat = self.hat_matrix(omega)
             A = (1 - np.cos(theta)) / (theta**2)
             B = (theta - np.sin(theta)) / (theta**3)
-            return I3 - A * dt * w_hat + B * (dt**2) * (w_hat @ w_hat)
-
+            return I3 + A * w_hat + B * (w_hat @ w_hat)
 
     def q_from_axis_angles(self, theta, unit_axis):
         """
