@@ -1716,7 +1716,7 @@ def hat(v: np.ndarray) -> np.ndarray:
     def predict_update_attitude(
         self,
         DeltaT: float,
-        Omega_km1: np.ndarray,       # (3,) body angular velocity used in A = exp(-ΔT hat(Ω))
+        Omega_km1: np.ndarray,       # (3,) body angular velocity
         R_previous: np.ndarray,      # (3,3) previous attitude (k-1)
         P_previous: np.ndarray,      # (3,3) previous covariance (k-1)
         Sigma_q: np.ndarray,         # (3,3) process noise cov (gyro PSD discretized)
