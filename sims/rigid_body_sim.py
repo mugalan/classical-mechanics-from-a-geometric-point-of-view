@@ -1684,7 +1684,7 @@ class RigidBodySim:
         """
         A_k-1 = I 
         G_k-1 = (DeltaT ** 0.5) * R @ Phi(-DeltaT * Omega)
-        H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
+        H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e2) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
         Uses the identity R^T hat(e) R = hat(R^T e) for efficiency.
         """
         I3 = np.eye(3)
@@ -1702,7 +1702,7 @@ class RigidBodySim:
         H1 = -self.hat_matrix(R.T @ e1) 
         H2 = -self.hat_matrix(R.T @ e2) 
         H3 = -self.hat_matrix(R.T @ e3)
-        H_km1 = np.vstack([H1, H2, H3])    # (9,3)
+        H_km1 = np.vstack([H1, H3])    # (9,3)
 
         return A_km1, G_km1, H_km1
 
