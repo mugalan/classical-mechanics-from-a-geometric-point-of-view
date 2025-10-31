@@ -50,6 +50,34 @@ class RigidBodySim:
             [-x[1], x[0],  0.]
         ])
 
+import numpy as np
+
+def hat(v: np.ndarray) -> np.ndarray:
+    """Return the skew-symmetric matrix (hat operator) of a 3-vector."""
+    x, y, z = v
+    return np.array([[0, -z, y],
+                     [z, 0, -x],
+                     [-y, x, 0]])
+
+    def _Phi_SO3(omega: np.ndarray, dt: float = 1.0) -> np.ndarray:
+        """
+        Left Jacobian Φ(-dt * omega) on SO(3).
+        Returns a 3×3 matrix mapping perturbations in the body frame.
+        """
+        omega = np.asarray(omega, dtype=float).reshape(3,)
+        I3 = np.eye(3)
+        theta = np.linalg.norm(omega) * dt
+        if theta < 1e-8:
+            # Small-angle Taylor expansion (accurate up to O(theta^3))
+            w_hat = self.hat_matrix(omega)
+            return I3 - 0.5 * dt * w_hat + (dt**2 / 12.0) * (w_hat @ w_hat)
+        else:
+            w_hat = self.hat_matrix(omega)
+            A = (1 - np.cos(theta)) / (theta**2)
+            B = (theta - np.sin(theta)) / (theta**3)
+            return I3 - A * dt * w_hat + B * (dt**2) * (w_hat @ w_hat)
+
+
     def q_from_axis_angles(self, theta, unit_axis):
         """
         Computes a quaternion from a given rotation angle and unit axis.
@@ -1672,7 +1700,7 @@ class RigidBodySim:
 
         # A and G
         A_km1 = np.eye(3) #
-        G_km1 = (DeltaT ** 0.5) * R @  self.exp_map(DeltaT * Omega) #(I3-(1/2)*DeltaT*self.hat_matrix(Omega)+(1/12)*(DeltaT**2)*self.hat_matrix(Omega)@self.hat_matrix(Omega))
+        G_km1 = (DeltaT ** 0.5) * R @  self._Phi_SO3(-DeltaT * Omega) #(I3-(1/2)*DeltaT*self.hat_matrix(Omega)+(1/12)*(DeltaT**2)*self.hat_matrix(Omega)@self.hat_matrix(Omega))
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
