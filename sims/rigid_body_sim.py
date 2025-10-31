@@ -1759,12 +1759,16 @@ class RigidBodySim:
         # 3) Covariance prediction
         P_pred_minus = A_km1 @ P_previous @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
 
-        # 4) Innovation (expects (9,1) or (9,))
+        # 4) Innovation 
         L = self.kf_innovation(R_pred_minus, A_1_meas, A_2_meas, A_3_meas)
 
         # 5) Kalman gain (stable solve; enforce symmetry + tiny jitter on S)
         S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m
-        S = 0.5 * (S + S.T) + 1e-12 * np.eye(9)
+        # Symmetrize for numerical stability
+        S = 0.5 * (S + S.T)
+        # Add a small jitter (size based on H_km1 output dimension)
+        S += 1e-12 * np.eye(S.shape[0])
+
         # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-) → K = [(S^T)\(H P^-)]^T
         K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
