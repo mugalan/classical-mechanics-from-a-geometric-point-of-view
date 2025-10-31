@@ -1716,8 +1716,9 @@ class RigidBodySim:
         P_previous: np.ndarray,      # (3,3) previous covariance (k-1)
         Sigma_q: np.ndarray,         # (3,3) process noise cov (gyro PSD discretized)
         Sigma_m: np.ndarray,         # (6,6) meas noise cov for stacked [R^T e1; R^T e3]
-        A_n_meas: np.ndarray,        # (3,) measured R^T e1
-        A_g_meas: np.ndarray,        # (3,) measured R^T e3
+        A_1_meas: np.ndarray,        # (3,) measured R^T e1
+        A_2_meas: np.ndarray,        # (3,) measured R^T e2
+        A_3_meas: np.ndarray,        # (3,) measured R^T e3
     ):
         """
         Intrinsic EKF on SO(3) with two direction measurements.
@@ -1743,8 +1744,9 @@ class RigidBodySim:
         assert P_previous.shape == (3, 3)
         assert Sigma_q.shape == (3, 3)
         assert Sigma_m.shape == (6, 6)
-        assert A_n_meas.shape == (3,)
-        assert A_g_meas.shape == (3,)
+        assert A_1_meas.shape == (3,)
+        assert A_2_meas.shape == (3,)
+        assert A_3_meas.shape == (3,)
 
         I3 = np.eye(3)
 
@@ -1758,7 +1760,7 @@ class RigidBodySim:
         P_pred_minus = A_km1 @ P_previous @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
 
         # 4) Innovation (expects (6,1) or (6,))
-        L = self.kf_innovation(R_pred_minus, A_n_meas, A_g_meas)
+        L = self.kf_innovation(R_pred_minus, A_1_meas, A_2_meas, A_3_meas)
 
         # 5) Kalman gain (stable solve; enforce symmetry + tiny jitter on S)
         S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m
