@@ -1692,7 +1692,7 @@ class RigidBodySim:
         R = np.asarray(R_for_H, float).reshape(3, 3)
 
         # A and G
-        A_km1 = np.eye(3) #
+        A_km1 = self.exp_map(DeltaT * Omega) #np.eye(3) #
         G_km1 = (DeltaT**0.5) * R @  self._Phi_SO3(-DeltaT * Omega) #(I3-(1/2)*DeltaT*self.hat_matrix(Omega)+(1/12)*(DeltaT**2)*self.hat_matrix(Omega)@self.hat_matrix(Omega))
 
         # H using e1 & e3
