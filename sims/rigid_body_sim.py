@@ -1732,8 +1732,8 @@ class RigidBodySim:
             P_k   = (I - K_k H_k) P_k^- (I - K_k H_k)^T + K_k Σ_m K_k^T
 
         Shapes:
-            Ω, delta: (3,),  R: (3,3),  P, Σ_q: (3,3),  Σ_m, S: (6,6),
-            H: (6,3),  K: (3,6),  innovation L: (6,1) or (6,)
+            Ω, delta: (3,),  R: (3,3),  P, Σ_q: (3,3),  Σ_m, S: (9,9),
+            H: (9,3),  K: (3,9),  innovation L: (9,1) or (9,)
 
         Notes:
             • Ω must be **body-frame** gyro rate to match A’s definition.
@@ -1759,12 +1759,12 @@ class RigidBodySim:
         # 3) Covariance prediction
         P_pred_minus = A_km1 @ P_previous @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
 
-        # 4) Innovation (expects (6,1) or (6,))
+        # 4) Innovation (expects (9,1) or (9,))
         L = self.kf_innovation(R_pred_minus, A_1_meas, A_2_meas, A_3_meas)
 
         # 5) Kalman gain (stable solve; enforce symmetry + tiny jitter on S)
         S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m
-        S = 0.5 * (S + S.T) + 1e-12 * np.eye(6)
+        S = 0.5 * (S + S.T) + 1e-12 * np.eye(9)
         # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-) → K = [(S^T)\(H P^-)]^T
         K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
