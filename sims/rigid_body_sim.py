@@ -50,15 +50,6 @@ class RigidBodySim:
             [-x[1], x[0],  0.]
         ])
 
-import numpy as np
-
-def hat(v: np.ndarray) -> np.ndarray:
-    """Return the skew-symmetric matrix (hat operator) of a 3-vector."""
-    x, y, z = v
-    return np.array([[0, -z, y],
-                     [z, 0, -x],
-                     [-y, x, 0]])
-
     def _Phi_SO3(self, omega: np.ndarray) -> np.ndarray:
         """
         Left Jacobian Φ(omega) on SO(3).
