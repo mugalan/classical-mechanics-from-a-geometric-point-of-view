@@ -1661,8 +1661,8 @@ class RigidBodySim:
 
     def _linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
         """
-        A_k-1 = exp(- dt * hat(Omega_{k-1}))
-        G_k-1 = sqrt(dt) * I
+        A_k-1 = I 
+        G_k-1 = (DeltaT ** 0.5) * R @ Phi(-DeltaT * Omega)
         H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
         Uses the identity R^T hat(e) R = hat(R^T e) for efficiency.
         """
@@ -1671,13 +1671,13 @@ class RigidBodySim:
         R = np.asarray(R_for_H, float).reshape(3, 3)
 
         # A and G
-        A_km1 = np.eye(3) #self.exp_map(-DeltaT * Omega)
-        G_km1 = (DeltaT ** 0.5) * (I3-0.*DeltaT*self.hat_matrix(Omega))
+        A_km1 = np.eye(3) #
+        G_km1 = (DeltaT ** 0.5) * R @ (I3-(1/2)*DeltaT*self.hat_matrix(Omega)+(1/12)*(DeltaT**2)*self.hat_matrix(Omega)@self.hat_matrix(Omega))
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
         e3 = np.array([0., 0., 1.])
-        H1 = -self.hat_matrix(R.T @ e1)  # == -(R^T @ hat(e1) @ R)
+        H1 = -self.hat_matrix(R.T @ e1)  
         H3 = -self.hat_matrix(R.T @ e3)
         H_km1 = np.vstack([H1, H3])    # (6,3)
 
