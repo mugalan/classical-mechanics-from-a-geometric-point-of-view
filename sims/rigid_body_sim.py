@@ -1672,7 +1672,7 @@ class RigidBodySim:
 
         # A and G
         A_km1 = np.eye(3) #
-        G_km1 = (DeltaT ** 0.5) * R @ (I3-(1/2)*DeltaT*self.hat_matrix(Omega)+(1/12)*(DeltaT**2)*self.hat_matrix(Omega)@self.hat_matrix(Omega))
+        G_km1 = (DeltaT ** 0.5) * R @  self.exp_map(DeltaT * Omega) #(I3-(1/2)*DeltaT*self.hat_matrix(Omega)+(1/12)*(DeltaT**2)*self.hat_matrix(Omega)@self.hat_matrix(Omega))
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
