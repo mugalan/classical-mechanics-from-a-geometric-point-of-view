@@ -1772,8 +1772,8 @@ class RigidBodySim:
         K = DeltaT * np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
         # 6) correction with dt and clamp
-        delta = (DeltaT * (K @ L)).reshape(3,)
-        # delta = ((K @ L)).reshape(3,)
+        # delta = (DeltaT * (K @ L)).reshape(3,)
+        delta = ((K @ L)).reshape(3,)
         n = np.linalg.norm(delta)
         if n > 0.2:       # ~11.5 deg cap
             delta *= 0.2 / n
