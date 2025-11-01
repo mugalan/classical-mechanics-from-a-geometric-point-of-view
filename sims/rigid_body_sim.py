@@ -1693,7 +1693,7 @@ class RigidBodySim:
 
         # A and G
         A_km1 = np.eye(3) #self.exp_map(DeltaT * Omega) #
-        G_km1 = (DeltaT**0.5) * R @  self._Phi_SO3(-DeltaT * Omega) # sqrt Brownian
+        G_km1 = (DeltaT) * R @  self._Phi_SO3(-DeltaT * Omega) # sqrt Brownian
 
         # H using e1 & e3
         e1 = np.array([1., 0., 0.])
