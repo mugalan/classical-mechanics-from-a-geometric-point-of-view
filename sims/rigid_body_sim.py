@@ -1769,7 +1769,7 @@ class RigidBodySim:
         S += 1e-12 * np.eye(S.shape[0])
 
         # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-) → K = [(S^T)\(H P^-)]^T
-        K = np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
+        K = DeltaT * np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
 
         # 6) correction with dt and clamp
         delta = (DeltaT * (K @ L)).reshape(3,)
