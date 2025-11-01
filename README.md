@@ -15,7 +15,7 @@ It also contains lightweight Python utilities for rigid‑body simulations and s
 
 For theory and simulation of intrinsic PID control and DEKF for rigid body motion can be found in the repo:
 
-https://github.dev/mugalan/intrinsic-rigid-body-control-estimation
+https://github.com/mugalan/intrinsic-rigid-body-control-estimation
 
 ---
 
