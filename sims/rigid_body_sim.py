@@ -1993,12 +1993,12 @@ class RigidBodySim:
                     omega_body_k = R_true.T @ omega_spatial
 
                     # generate noisy measurements
-                    Omega_meas, A_1_meas, A_2_meas, A_3_meas = mr.sensor(
+                    Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
                         R_true, omega_body_k, sigma_omega, sigma_dir
                     )
 
                     # EKF predict + update
-                    R_hat, P_hat, *_ = mr.predict_update_attitude(
+                    R_hat, P_hat, *_ = self.predict_update_attitude(
                         DeltaT=dt,
                         Omega_km1=Omega_meas,
                         R_previous=R_hat,
