@@ -1789,7 +1789,6 @@ class RigidBodySim:
 
         return R_pred, P_pred, K, H_km1, S
 
-
     def run_offline_EKF_analysis(self, trajectory, dt=0.01, 
                                 Sigma_q_factor=1.0, Sigma_m_factor=1.0,
                                 sigma_omega=5e-3, sigma_dir=2e-2,
@@ -1817,7 +1816,7 @@ class RigidBodySim:
 
         # --- defaults ---
         sigma_omega_discrete = sigma_omega /(dt**0.5) # Scaled to discrete time step
-        Sigma_q = Sigma_q_factor * (sigma_omega_discrete ** 2) * np.eye(3)
+        Sigma_q = Sigma_q_factor * (sigma_omega ** 2) * np.eye(3)
         Sigma_m = Sigma_m_factor * (sigma_dir ** 2) * np.eye(9)
 
         deg_to_rad = np.pi / 180.0
@@ -1973,7 +1972,7 @@ class RigidBodySim:
         for q_scale in q_scales:
             for m_scale in m_scales:
                 # Covariances
-                Sigma_q = q_scale * (sigma_omega_discrete ** 2) * np.eye(3)
+                Sigma_q = q_scale * (sigma_omega ** 2) * np.eye(3)
                 Sigma_m = m_scale * (sigma_dir ** 2) * np.eye(9)
 
                 # Initialize filter
