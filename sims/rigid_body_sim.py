@@ -1931,6 +1931,110 @@ class RigidBodySim:
             figs=(fig_line, fig_hist, fig_cov),
         )
 
+    def auto_tune_EKF(self, trajectory, Sigma_p0,
+                    sigma_omega=5e-3, sigma_dir=2e-2,
+                    dt=0.01, steps=10000,
+                    omega_body=None,
+                    q_scales=[0.1, 1.0, 10.0, 100.0],
+                    m_scales=[0.01, 0.1, 1.0, 10.0],
+                    verbose=True):
+        """
+        Auto-tune EKF by sweeping over Sigma_q and Sigma_m scales.
+        Evaluates performance based on final and median attitude RMSE.
+
+        Parameters
+        ----------
+        trajectory : ndarray
+            The trajectory.
+        Sigma_p0 : ndarray(3x3)
+            Initial covariance.
+        sigma_omega, sigma_dir : float
+            Sensor noise standard deviations (gyro, direction).
+        dt : float
+            Time step [s].
+        steps : int
+            Number of simulation steps.
+        omega_body : ndarray(3,), optional
+            Constant body angular velocity [rad/s]; if None → [1,1,1].
+        q_scales, m_scales : list of floats
+            Multiplicative scales for Sigma_q and Sigma_m.
+        verbose : bool
+            Print intermediate results.
+
+        Returns
+        -------
+        best_config : tuple (q_scale, m_scale)
+        results : list of tuples (q_scale, m_scale, final_err, median_err)
+        """
+
+        # --- search results ---
+        best_config = None
+        best_score = np.inf
+        results = []
+
+        for q_scale in q_scales:
+            for m_scale in m_scales:
+                # Covariances
+                Sigma_q = q_scale * (sigma_omega ** 2) * np.eye(3)
+                Sigma_m = m_scale * (sigma_dir ** 2) * np.eye(9)
+
+                # Initialize filter
+                R_hat = deepcopy(trajectory[0][0][0])  # initial attitude
+                P_hat = Sigma_p0.copy()
+
+                # Metrics
+                err_deg = []
+
+                for k in range(steps):
+                    Xk = trajectory[k]
+                    R_true = Xk[0][0]
+                    omega_spatial = Xk[1]
+                    omega_body_k = R_true.T @ omega_spatial
+
+                    # generate noisy measurements
+                    Omega_meas, A_1_meas, A_2_meas, A_3_meas = mr.sensor(
+                        R_true, omega_body_k, sigma_omega, sigma_dir
+                    )
+
+                    # EKF predict + update
+                    R_hat, P_hat, *_ = mr.predict_update_attitude(
+                        DeltaT=dt,
+                        Omega_km1=Omega_meas,
+                        R_previous=R_hat,
+                        P_previous=P_hat,
+                        Sigma_q=Sigma_q,
+                        Sigma_m=Sigma_m,
+                        A_1_meas=A_1_meas,
+                        A_2_meas=A_2_meas,
+                        A_3_meas=A_3_meas,
+                    )
+
+                    # compute attitude error
+                    R_err = R_hat.T @ R_true
+                    c = np.clip((np.trace(R_err) - 1.0) * 0.5, -1.0, 1.0)
+                    angle_rad = np.arccos(c)
+                    err_deg.append(np.degrees(angle_rad))
+
+                # summarize
+                final_err = err_deg[-1]
+                median_err = np.median(err_deg)
+                score = final_err + median_err
+
+                results.append((q_scale, m_scale, final_err, median_err))
+
+                if verbose:
+                    print(f"[q={q_scale:.2e}, m={m_scale:.2e}] Final: {final_err:.3f}°, Median: {median_err:.3f}°")
+
+                if score < best_score:
+                    best_score = score
+                    best_config = (q_scale, m_scale)
+
+        print("\n✅ Best configuration found:")
+        print(f"Sigma_q = {best_config[0]:.2e} × base (σ_ω² I₃)")
+        print(f"Sigma_m = {best_config[1]:.2e} × base (σ_dir² I₉)")
+
+        return best_config, results
+
 ##### Dont Delete
 
 
