@@ -1791,7 +1791,7 @@ class RigidBodySim:
 
 
     def run_offline_EKF_analysis(self, trajectory, dt=0.01, 
-                                Sigma_q=None, Sigma_m=None,
+                                Sigma_q_factor=1.0, Sigma_q_factor=1.0,
                                 sigma_omega=5e-3, sigma_dir=2e-2,
                                 sigma_init_deg=10.0):
         """
@@ -1816,10 +1816,8 @@ class RigidBodySim:
         """
 
         # --- defaults ---
-        if Sigma_q is None:
-            Sigma_q = 1.0 * (sigma_omega ** 2) * np.eye(3)
-        if Sigma_m is None:
-            Sigma_m = 1.0 * (sigma_dir ** 2) * np.eye(9)
+        Sigma_q = Sigma_q_factor * (sigma_omega ** 2) * np.eye(3)
+        Sigma_m = Sigma_m_factor * (sigma_dir ** 2) * np.eye(9)
 
         deg_to_rad = np.pi / 180.0
         Sigma_p0 = (sigma_init_deg * deg_to_rad)**2 * np.eye(3)
