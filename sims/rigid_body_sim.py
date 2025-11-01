@@ -1791,7 +1791,7 @@ class RigidBodySim:
 
 
     def run_offline_EKF_analysis(self, trajectory, dt=0.01, 
-                                Sigma_q_factor=1.0, Sigma_q_factor=1.0,
+                                Sigma_q_factor=1.0, Sigma_m_factor=1.0,
                                 sigma_omega=5e-3, sigma_dir=2e-2,
                                 sigma_init_deg=10.0):
         """
