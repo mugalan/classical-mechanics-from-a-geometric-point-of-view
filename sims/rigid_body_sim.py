@@ -1789,6 +1789,148 @@ class RigidBodySim:
         return R_pred, P_pred, K, H_km1, S
 
 
+    def run_offline_EKF_analysis(self, trajectory, dt=0.01, 
+                                Sigma_q=None, Sigma_m=None,
+                                sigma_omega=5e-3, sigma_dir=2e-2,
+                                sigma_init_deg=10.0):
+        """
+        Run an offline attitude EKF over a simulated trajectory
+        and produce diagnostic plots.
+
+        Parameters
+        ----------
+        trajectory : list
+            List of simulation states [(X_k)], where each X_k contains
+            [ [R, o], omega, p, Xc ], i.e. rotation, angular velocity, etc.
+        dt : float
+            Time step [s].
+        Sigma_q : ndarray(3x3), optional
+            Process noise covariance. If None, default uses (sigma_omega**2)*I3.
+        Sigma_m : ndarray(9x9), optional
+            Measurement noise covariance. If None, default uses (sigma_dir**2)*I9.
+        sigma_omega, sigma_dir : float
+            Sensor noise standard deviations.
+        sigma_init_deg : float
+            Initial attitude uncertainty [deg].
+        """
+
+        # --- defaults ---
+        if Sigma_q is None:
+            Sigma_q = 1.0 * (sigma_omega ** 2) * np.eye(3)
+        if Sigma_m is None:
+            Sigma_m = 1.0 * (sigma_dir ** 2) * np.eye(9)
+
+        deg_to_rad = np.pi / 180.0
+        Sigma_p0 = (sigma_init_deg * deg_to_rad)**2 * np.eye(3)
+
+        # --- initial filter state ---
+        R_hat = trajectory[0][0][0]  # use true initial orientation
+        P_hat = Sigma_p0.copy()
+
+        # --- preallocate metrics ---
+        N = len(trajectory)
+        t = np.arange(N) * dt
+        err_deg, trace_err, lambda_max, ang_1sigma_deg = [], [], [], []
+
+        # --- helper: rotation angle from R ---
+        def angle_from_R(R):
+            c = (np.trace(R) - 1.0) * 0.5
+            c = float(np.clip(c, -1.0, 1.0))
+            return np.arccos(c)
+
+        # --- main loop ---
+        for k in range(N):
+            Xk = trajectory[k]
+            R_true = Xk[0][0]
+            omega_spatial = Xk[1]
+            omega_body = R_true.T @ omega_spatial
+
+            # noisy sensor measurements
+            Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
+                R_true, omega_body, sigma_omega, sigma_dir
+            )
+
+            # EKF step
+            R_hat, P_hat, K, H, S = self.predict_update_attitude(
+                DeltaT=dt,
+                Omega_km1=Omega_meas,
+                R_previous=R_hat,
+                P_previous=P_hat,
+                Sigma_q=Sigma_q,
+                Sigma_m=Sigma_m,
+                A_1_meas=A_1_meas,
+                A_2_meas=A_2_meas,
+                A_3_meas=A_3_meas,
+            )
+
+            # attitude error metrics
+            R_err = R_hat.T @ R_true
+            err_deg.append(np.degrees(angle_from_R(R_err)))
+            trace_err.append(3.0 - np.trace(R_err))
+
+            # covariance quality
+            P_sym = 0.5 * (P_hat + P_hat.T)
+            w = np.linalg.eigvalsh(P_sym)
+            lam_max = float(w[-1])
+            lambda_max.append(lam_max)
+            ang_1sigma_deg.append(np.degrees(np.sqrt(max(lam_max, 0.0))))
+
+        # --- summary printout ---
+        print("==== Offline EKF Analysis ====")
+        print(f"Final attitude error: {err_deg[-1]:.3f} deg")
+        print(f"Median attitude error: {np.median(err_deg):.3f} deg")
+        print(f"Final trace error: {trace_err[-1]:.6f}")
+        print(f"Median trace error: {np.median(trace_err):.6f}")
+        print(f"Final √λ_max(P): {ang_1sigma_deg[-1]:.3f} deg (1σ equivalent)")
+
+        # --- plots ---
+        # 1. Trace error vs time
+        fig_line = go.Figure()
+        fig_line.add_trace(go.Scatter(x=t, y=trace_err, mode="lines",
+                                    name="ε_tr = 3 - tr(R_trueᵀ R_hat)"))
+        fig_line.update_layout(
+            title="Trace misalignment vs time (offline EKF on simulated trajectory)",
+            xaxis_title="Time (s)",
+            yaxis_title="Trace error (0 = perfect alignment)",
+        )
+
+        # 2. Histogram of trace error
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Histogram(x=trace_err, nbinsx=50, name="trace error"))
+        fig_hist.update_layout(
+            title="Histogram of trace misalignment (offline EKF)",
+            xaxis_title="Trace error",
+            yaxis_title="Count",
+            bargap=0.05,
+        )
+
+        # 3. Covariance eigenvalues
+        fig_cov = go.Figure()
+        fig_cov.add_trace(go.Scatter(x=t, y=lambda_max, mode="lines", name="λ_max(P) [rad²]"))
+        fig_cov.add_trace(go.Scatter(x=t, y=ang_1sigma_deg, mode="lines",
+                                    name="√λ_max(P) [deg]", yaxis="y2"))
+        fig_cov.update_layout(
+            title="Covariance magnitude over time (offline EKF)",
+            xaxis_title="Time (s)",
+            yaxis=dict(title="Largest eigenvalue λ_max(P) [rad²]"),
+            yaxis2=dict(title="1σ angle √λ_max(P) [deg]", overlaying="y", side="right"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0)
+        )
+
+        # show
+        fig_line.show()
+        fig_hist.show()
+        fig_cov.show()
+
+        return dict(
+            time=t,
+            err_deg=np.array(err_deg),
+            trace_err=np.array(trace_err),
+            lambda_max=np.array(lambda_max),
+            ang_1sigma_deg=np.array(ang_1sigma_deg),
+            figs=(fig_line, fig_hist, fig_cov),
+        )
+
 ##### Dont Delete
 
 
