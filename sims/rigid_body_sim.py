@@ -5,6 +5,7 @@ from scipy.integrate import odeint
 import math
 from numpy import linalg
 import sympy
+from copy import deepcopy
 
 from sympy import symbols
 from sympy import *
