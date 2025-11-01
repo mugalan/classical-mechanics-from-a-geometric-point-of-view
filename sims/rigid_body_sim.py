@@ -1951,8 +1951,6 @@ class RigidBodySim:
             Sensor noise standard deviations (gyro, direction).
         dt : float
             Time step [s].
-        steps : int
-            Number of simulation steps.
         omega_body : ndarray(3,), optional
             Constant body angular velocity [rad/s]; if None → [1,1,1].
         q_scales, m_scales : list of floats
@@ -1984,8 +1982,7 @@ class RigidBodySim:
                 # Metrics
                 err_deg = []
 
-                for k in range(steps):
-                    Xk = trajectory[k]
+                for Xk in trajectory:
                     R_true = Xk[0][0]
                     omega_spatial = Xk[1]
                     omega_body_k = R_true.T @ omega_spatial
