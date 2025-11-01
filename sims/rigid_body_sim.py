@@ -1847,7 +1847,7 @@ class RigidBodySim:
 
             # noisy sensor measurements
             Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
-                R_true, omega_body, sigma_omega, sigma_dir
+                dt, R_true, omega_body, sigma_omega, sigma_dir
             )
 
             # EKF step
@@ -1990,7 +1990,7 @@ class RigidBodySim:
 
                     # generate noisy measurements
                     Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
-                        R_true, omega_body_k, sigma_omega, sigma_dir
+                        dt, R_true, omega_body_k, sigma_omega, sigma_dir
                     )
 
                     # EKF predict + update
