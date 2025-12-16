@@ -449,7 +449,7 @@ fig_cov.show()
 ```
 
 **Tips**
-- Ensure both the generator and DEKF use **body** rate for \(\dot R = R\,\widehat{\Omega}_{\text{body}}\). If your trajectory stores **spatial** \(\omega\), convert via \(\Omega_{\text{body}} = R^\top \omega_{\text{spatial}}\).
+- Ensure both the generator and DEKF use **body** rate for $\dot R = R\,\widehat{\Omega}_{\text{body}}$. If your trajectory stores **spatial** $\omega$, convert via $\Omega_{\text{body}} = R^\top \omega_{\text{spatial}}$.
 - If “error drifts while P shrinks,” check: (i) error matrix `R_err = R_hat.T @ R_true`, (ii) RK4 stage timing/weights, and (iii) signs in `H` and residual.
 
 ---
@@ -457,23 +457,21 @@ fig_cov.show()
 ## 📐 Math refs
 
 - Hat matrix (skew) for $x = [x, y, z]^T$:
-  $\begin{align}
+  $$
+  \begin{align}
     \hat{x} = \begin{bmatrix}
     0 & -z & y \\
     z & 0 & -x \\
     -y & x & 0
     \end{bmatrix}
-  \end{align}$
+  \end{align}
+  $$
 
-- Quaternion from axis–angle (unit axis `n`, angle `θ`):
-  \[
-    q = [\cos(\tfrac{\theta}{2}),\ \sin(\tfrac{\theta}{2})\,n]
-  \]
+- Quaternion from axis–angle (unit axis $n$, angle $\theta$):
+  $q = [\cos(\tfrac{\theta}{2}),\ \sin(\tfrac{\theta}{2})\,n]$
 
-- Rotation from quaternion (scalar–vector split `q = [q_0, w]`):
-  \[
-    R = I + 2 q_0\,\hat{w} + 2\,\hat{w}^2
-  \]
+- Rotation from quaternion (scalar–vector split $q = [q_0, w]$):
+  $R = I + 2 q_0\,\hat{w} + 2\,\hat{w}^2$
 
 ## 🔖 License
 
