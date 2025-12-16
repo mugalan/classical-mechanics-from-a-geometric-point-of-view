@@ -457,13 +457,13 @@ fig_cov.show()
 ## 📐 Math refs
 
 - Hat matrix (skew) for $x = [x, y, z]^T$:
-  \begin{align}
+  $\begin{align}
     \hat{x} = \begin{bmatrix}
     0 & -z & y \\
     z & 0 & -x \\
     -y & x & 0
     \end{bmatrix}
-  \end{align}
+  \end{align}$
 
 - Quaternion from axis–angle (unit axis `n`, angle `θ`):
   \[
