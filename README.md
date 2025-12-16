@@ -449,7 +449,8 @@ fig_cov.show()
 ```
 
 **Tips**
-- Ensure both the generator and DEKF use **body** rate for $\dot R = R\,\widehat{\Omega}_{\text{body}}$. If your trajectory stores **spatial** $\omega$, convert via $\Omega_{\text{body}} = R^\top \omega_{\text{spatial}}$.
+- Ensure both the generator and DEKF use **body** rate for
+  $\dot{R} = R\,\widehat{\Omega}_{\text{body}}$. If your trajectory stores **spatial** $\omega$, convert via $\Omega_{\text{body}} = R^\top \omega_{\text{spatial}}$.
 - If “error drifts while P shrinks,” check: (i) error matrix `R_err = R_hat.T @ R_true`, (ii) RK4 stage timing/weights, and (iii) signs in `H` and residual.
 
 ---
@@ -468,7 +469,7 @@ fig_cov.show()
   $$
 
 - Quaternion from axis–angle (unit axis $n$, angle $\theta$):
-  $q = [\cos(\tfrac{\theta}{2}),\ \sin(\tfrac{\theta}{2})\,n]$
+  $q = [\cos\left(\tfrac{\theta}{2}\right),\ \sin\left(\tfrac{\theta}{2}\right)\,n]$
 
 - Rotation from quaternion (scalar–vector split $q = [q_0, w]$):
   $R = I + 2 q_0\,\hat{w} + 2\,\hat{w}^2$
