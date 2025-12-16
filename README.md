@@ -24,7 +24,7 @@ https://github.com/mugalan/intrinsic-rigid-body-control-estimation
 - Skew (hat) matrix: cross-product as a matrix operator.
 - Quaternion ⇄ rotation matrix conversions.
 - Euler-angle extraction (ZYX convention in this implementation).
-- Align `e3` to a target vector (`R e3 = γ`) via axis–angle.
+- Align $e_3$ to a target direction $R e_3 = \gamma$ via axis–angle.
 - Rotate + translate arbitrary vertices.
 - Plotly helpers:
   - Orthonormal frame rendering.
@@ -32,12 +32,10 @@ https://github.com/mugalan/intrinsic-rigid-body-control-estimation
   - 2D animated scatter.
   - Flat-shaded animated cube.
 - ODE helpers:
-  - Linear system model `dX/dt = A X`.
+  - Linear system model $dX/dt = A X$.
   - `simulate_dy_system` wrapper around `scipy.integrate.odeint`.
   - Custom integrators: Euler and RK4 pipeline for a rigid body state.
 - Convenience geometry: cube-vertex generator and “simulate a cube” pipeline.
-
-> Heads-up: the original class had a duplicate `add_orth_norm_frame` and a likely typo `r_from_quaternionsns` → `r_from_quaternions`. The examples below assume those are fixed.
 
 ---
 
