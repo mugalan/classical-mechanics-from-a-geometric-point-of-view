@@ -32,7 +32,7 @@ https://github.com/mugalan/intrinsic-rigid-body-control-estimation
   - 2D animated scatter.
   - Flat-shaded animated cube.
 - ODE helpers:
-  - Linear system model $dX/dt = A X$.
+  - Linear system model $\dfrac{dX}{dt} = A X$.
   - `simulate_dy_system` wrapper around `scipy.integrate.odeint`.
   - Custom integrators: Euler and RK4 pipeline for a rigid body state.
 - Convenience geometry: cube-vertex generator and “simulate a cube” pipeline.
@@ -87,9 +87,9 @@ print(phi, theta, psi)
 
 ---
 
-## 🎯 Aligning e₃ to a target direction γ
+## 🎯 Aligning $e_3$ to a target direction $\gamma$
 
-Given a unit vector `γ`, build `R` such that `R e3 = γ`:
+Given a unit directionr $\gamma$, build $R\in SO(3)$ such that $R e_3 = \gamma$:
 
 ```python
 gamma = np.array([1/np.sqrt(2), 0.0, 1/np.sqrt(2)])
@@ -456,14 +456,14 @@ fig_cov.show()
 
 ## 📐 Math refs
 
-- Hat matrix (skew) for `x = [x, y, z]^T`:
-  \[
+- Hat matrix (skew) for $x = [x, y, z]^T$:
+  \begin{align}
     \hat{x} = \begin{bmatrix}
     0 & -z & y \\
     z & 0 & -x \\
     -y & x & 0
     \end{bmatrix}
-  \]
+  \end{align}
 
 - Quaternion from axis–angle (unit axis `n`, angle `θ`):
   \[
