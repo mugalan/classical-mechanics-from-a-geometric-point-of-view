@@ -691,11 +691,16 @@ class LinearGaussianSystemSyms:
                     layout=go.Layout(
                         annotations=[
                             dict(
-                                x=0.98, y=0.95, xref="paper", yref="paper",
-                                xanchor="right", yanchor="top",
-                                text=(f"$k={k} | \\mu^{{-}}={mu_pred[k]:.3f}, \\sigma^{{-}}$={sig_pred[k]:.3f} $"
-                                      f"$| \\mu={mu_post[k]:.3f}, \\sigma={sig_post[k]:.3f}$"),
-                                showarrow=False, font=dict(size=12)
+                                x=0.5, y=1.08,
+                                xref="paper", yref="paper",
+                                xanchor="center", yanchor="bottom",
+                                text=(
+                                    f"$k={k}\\; | \\; \\mu^{{-}}={mu_pred[k]:.3f},\\; "
+                                    f"\\sigma^{{-}}={sig_pred[k]:.3f}\\; | \\; "
+                                    f"\\mu={mu_post[k]:.3f},\\; \\sigma={sig_post[k]:.3f}$"
+                                ),
+                                showarrow=False,
+                                font=dict(size=12)
                             )
                         ]
                     )
