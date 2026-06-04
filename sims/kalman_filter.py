@@ -459,144 +459,144 @@ class LinearGaussianSystemSyms:
         return_fig: bool = False,
         component_label: str = "y"
     ):
-    """
-    Animate the scalar measurement-space Gaussian distributions produced by a
-    linear Kalman filter.
+        """
+        Animate the scalar measurement-space Gaussian distributions produced by a
+        linear Kalman filter.
 
-    This method is intended for systems with a one-dimensional measurement,
-    i.e. p = 1. It visualizes, at each time step k, how the Kalman filter's
-    belief about the next measurement changes after the observed measurement
-    is incorporated.
+        This method is intended for systems with a one-dimensional measurement,
+        i.e. p = 1. It visualizes, at each time step k, how the Kalman filter's
+        belief about the next measurement changes after the observed measurement
+        is incorporated.
 
-    For the linear Gaussian system
+        For the linear Gaussian system
 
-        x_k = A x_{k-1} + process noise,
-        y_k = H x_k + z_k,
+            x_k = A x_{k-1} + process noise,
+            y_k = H x_k + z_k,
 
-    with measurement noise
+        with measurement noise
 
-        z_k ~ N(0, Sigma_m),
+            z_k ~ N(0, Sigma_m),
 
-    the Kalman filter first forms the predicted state distribution
+        the Kalman filter first forms the predicted state distribution
 
-        x_k | Y_{k-1} ~ N(m_k^-, P_k^-),
+            x_k | Y_{k-1} ~ N(m_k^-, P_k^-),
 
-    where
+        where
 
-        m_k^- = A m_{k-1},
-        P_k^- = A P_{k-1} A.T + Q,
+            m_k^- = A m_{k-1},
+            P_k^- = A P_{k-1} A.T + Q,
 
-    and Q is the state-space process covariance returned by
-    ``self.process_cov_state()``. If the model was constructed with a process
-    noise input matrix G, then Q = G Sigma_p G.T; otherwise Q = Sigma_p.
+        and Q is the state-space process covariance returned by
+        ``self.process_cov_state()``. If the model was constructed with a process
+        noise input matrix G, then Q = G Sigma_p G.T; otherwise Q = Sigma_p.
 
-    Before observing y_k, the predicted measurement is itself Gaussian:
+        Before observing y_k, the predicted measurement is itself Gaussian:
 
-        y_k | Y_{k-1} ~ N(H m_k^-, H P_k^- H.T + Sigma_m).
+            y_k | Y_{k-1} ~ N(H m_k^-, H P_k^- H.T + Sigma_m).
 
-    This is the predictive measurement distribution. The method records its
-    mean and standard deviation at every time step and plots it as the curve
-    labeled
+        This is the predictive measurement distribution. The method records its
+        mean and standard deviation at every time step and plots it as the curve
+        labeled
 
-        Predictive p(y_k | Y_{k-1}).
+            Predictive p(y_k | Y_{k-1}).
 
-    After the actual scalar measurement Y[k] is observed, the method performs
-    a Kalman measurement update using ``kf.measurement_update``. This produces
-    the posterior state distribution
+        After the actual scalar measurement Y[k] is observed, the method performs
+        a Kalman measurement update using ``kf.measurement_update``. This produces
+        the posterior state distribution
 
-        x_k | Y_k ~ N(m_k, P_k).
+            x_k | Y_k ~ N(m_k, P_k).
 
-    The method then maps this posterior state distribution back into
-    measurement space, producing the posterior-predictive measurement
-    distribution
+        The method then maps this posterior state distribution back into
+        measurement space, producing the posterior-predictive measurement
+        distribution
 
-        y_k | Y_k ~ N(H m_k, H P_k H.T + Sigma_m).
+            y_k | Y_k ~ N(H m_k, H P_k H.T + Sigma_m).
 
-    This is plotted as the curve labeled
+        This is plotted as the curve labeled
 
-        Posterior p(y_k | Y_k).
+            Posterior p(y_k | Y_k).
 
-    The observed measurement value Y[k] is plotted as a marker on the same
-    measurement axis. The resulting Plotly animation shows, frame by frame,
-    the relationship between:
+        The observed measurement value Y[k] is plotted as a marker on the same
+        measurement axis. The resulting Plotly animation shows, frame by frame,
+        the relationship between:
 
-        1. the predicted measurement distribution before seeing y_k,
-        2. the observed scalar measurement y_k,
-        3. the posterior-predictive measurement distribution after the update.
+            1. the predicted measurement distribution before seeing y_k,
+            2. the observed scalar measurement y_k,
+            3. the posterior-predictive measurement distribution after the update.
 
-    If Y is not supplied, the method simulates T measurements from the current
-    linear Gaussian system using ``self.simulate(T)``. If Y is supplied, it is
-    used directly as the observed measurement sequence. The initial filtering
-    mean and covariance can be provided through ``m0`` and ``P0``; otherwise
-    the method uses a zero initial mean and a large diagonal covariance
-    ``1e2 * I``.
+        If Y is not supplied, the method simulates T measurements from the current
+        linear Gaussian system using ``self.simulate(T)``. If Y is supplied, it is
+        used directly as the observed measurement sequence. The initial filtering
+        mean and covariance can be provided through ``m0`` and ``P0``; otherwise
+        the method uses a zero initial mean and a large diagonal covariance
+        ``1e2 * I``.
 
-    Parameters
-    ----------
-    T : int, optional
-        Number of time steps to simulate when Y is not provided. Either T or Y
-        must be supplied.
+        Parameters
+        ----------
+        T : int, optional
+            Number of time steps to simulate when Y is not provided. Either T or Y
+            must be supplied.
 
-    Y : array-like, optional
-        Scalar measurement sequence. It is reshaped into a one-dimensional
-        array of length T. If provided, no new data are simulated.
+        Y : array-like, optional
+            Scalar measurement sequence. It is reshaped into a one-dimensional
+            array of length T. If provided, no new data are simulated.
 
-    m0 : array-like, optional
-        Initial state estimate. If omitted, a zero vector of length n is used.
+        m0 : array-like, optional
+            Initial state estimate. If omitted, a zero vector of length n is used.
 
-    P0 : array-like, optional
-        Initial state covariance. If omitted, ``1e2 * I`` is used.
+        P0 : array-like, optional
+            Initial state covariance. If omitted, ``1e2 * I`` is used.
 
-    kf : object, optional
-        Kalman filter object providing a ``measurement_update`` method. If
-        omitted, a default ``LinearKF(use_joseph=True, symmetrize=True)`` is
-        used.
+        kf : object, optional
+            Kalman filter object providing a ``measurement_update`` method. If
+            omitted, a default ``LinearKF(use_joseph=True, symmetrize=True)`` is
+            used.
 
-    frame_ms : int, default=120
-        Duration of each animation frame in milliseconds.
+        frame_ms : int, default=120
+            Duration of each animation frame in milliseconds.
 
-    auto_play : bool, default=False
-        Whether the saved HTML animation should autoplay. This only affects
-        saved HTML output.
+        auto_play : bool, default=False
+            Whether the saved HTML animation should autoplay. This only affects
+            saved HTML output.
 
-    save_html_path : str, optional
-        If provided, the Plotly animation is saved to this HTML file path.
+        save_html_path : str, optional
+            If provided, the Plotly animation is saved to this HTML file path.
 
-    show : bool, default=True
-        If True, display the Plotly animation immediately.
+        show : bool, default=True
+            If True, display the Plotly animation immediately.
 
-    return_fig : bool, default=False
-        If True, return the Plotly Figure object.
+        return_fig : bool, default=False
+            If True, return the Plotly Figure object.
 
-    component_label : str, default="y"
-        Label used for the scalar measurement axis and observed measurement
-        marker.
+        component_label : str, default="y"
+            Label used for the scalar measurement axis and observed measurement
+            marker.
 
-    Returns
-    -------
-    plotly.graph_objects.Figure or None
-        Returns the Plotly Figure only when ``return_fig=True``. Otherwise the
-        method displays and/or saves the figure and returns None.
+        Returns
+        -------
+        plotly.graph_objects.Figure or None
+            Returns the Plotly Figure only when ``return_fig=True``. Otherwise the
+            method displays and/or saves the figure and returns None.
 
-    Raises
-    ------
-    ValueError
-        Raised if the system has non-scalar measurements, if neither T nor Y
-        is supplied, or if the provided initial mean/covariance have invalid
-        dimensions.
+        Raises
+        ------
+        ValueError
+            Raised if the system has non-scalar measurements, if neither T nor Y
+            is supplied, or if the provided initial mean/covariance have invalid
+            dimensions.
 
-    Notes
-    -----
-    This method does not animate the state distribution directly. Instead, it
-    projects the predicted and posterior state distributions into measurement
-    space through H. Therefore, it is especially useful for explaining the
-    measurement-update step of the Kalman filter and the Gaussian conditioning
-    interpretation:
+        Notes
+        -----
+        This method does not animate the state distribution directly. Instead, it
+        projects the predicted and posterior state distributions into measurement
+        space through H. Therefore, it is especially useful for explaining the
+        measurement-update step of the Kalman filter and the Gaussian conditioning
+        interpretation:
 
-        prior state belief -> predictive measurement distribution
-        observed measurement -> posterior state belief
-        posterior state belief -> posterior-predictive measurement distribution.
-    """
+            prior state belief -> predictive measurement distribution
+            observed measurement -> posterior state belief
+            posterior state belief -> posterior-predictive measurement distribution.
+        """
 
         if self.p != 1:
             raise ValueError(f"This animation requires scalar measurements (p=1); got p={self.p}.")
