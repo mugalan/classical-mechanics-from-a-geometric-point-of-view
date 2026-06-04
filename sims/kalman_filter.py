@@ -724,7 +724,7 @@ class LinearGaussianSystemSyms:
                 yaxis_title="density",
                 template="plotly_white",
                 legend=dict(orientation="v", x=1.02, xanchor="left", y=0.5, yanchor="middle"),
-                margin=dict(r=160, l=60, t=60, b=80),
+                margin=dict(r=160, l=60, t=120, b=80),
                 updatemenus=[
                     dict(
                         type="buttons", direction="left",
