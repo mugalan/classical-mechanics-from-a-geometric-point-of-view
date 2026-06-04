@@ -693,8 +693,8 @@ class LinearGaussianSystemSyms:
                             dict(
                                 x=0.98, y=0.95, xref="paper", yref="paper",
                                 xanchor="right", yanchor="top",
-                                text=(f"k={k} | $\\mu^{{-}}$={mu_pred[k]:.3f}, $\\sigma^{{-}}$={sig_pred[k]:.3f} "
-                                      f"| \\mu={mu_post[k]:.3f}, \\sigma={sig_post[k]:.3f}"),
+                                text=(f"$k={k} | \\mu^{{-}}={mu_pred[k]:.3f}, \\sigma^{{-}}$={sig_pred[k]:.3f} $"
+                                      f"$| \\mu={mu_post[k]:.3f}, \\sigma={sig_post[k]:.3f}$"),
                                 showarrow=False, font=dict(size=12)
                             )
                         ]
