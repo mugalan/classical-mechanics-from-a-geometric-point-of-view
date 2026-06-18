@@ -958,3 +958,277 @@ class LinearGaussianSystemSyms:
             fig_gauss.show()
 
         return (M, Yhat, fig_ts, fig_gauss) if return_fig else (M, Yhat)
+
+
+class SO3IMUSensorFusionEKF:
+    """
+    Error-state intrinsic EKF on SO(3) for vector-direction measurements.
+
+    Assumes an existing LinearKF class with:
+        kf.step(m_prev, P_prev, A, Q, H, y, R, G=None)
+
+    State error:
+        eta_k in R^3
+
+    Propagation:
+        R_k^- = R_{k-1}^+ exp(dt * hat(Omega_k))
+
+    Measurement:
+        y_k =
+        [
+            R_k^T e_1
+            R_k^T e_2
+            ...
+        ]
+    """
+
+    def __init__(self, kf, inertial_directions, dt):
+        self.kf = kf
+        self.E = np.asarray(inertial_directions, dtype=float)  # shape (m,3)
+        self.dt = float(dt)
+
+        if self.E.ndim != 2 or self.E.shape[1] != 3:
+            raise ValueError("`inertial_directions` must have shape (m,3).")
+
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
+
+    @staticmethod
+    def hat(x):
+        x = np.asarray(x, dtype=float).reshape(3)
+        return np.array([
+            [0.0, -x[2], x[1]],
+            [x[2], 0.0, -x[0]],
+            [-x[1], x[0], 0.0],
+        ])
+
+    @classmethod
+    def exp_so3(cls, omega):
+        omega = np.asarray(omega, dtype=float).reshape(3)
+        theta = np.linalg.norm(omega)
+        W = cls.hat(omega)
+
+        if theta < 1e-12:
+            return np.eye(3) + W + 0.5 * W @ W
+
+        A = np.sin(theta) / theta
+        B = (1.0 - np.cos(theta)) / theta**2
+        return np.eye(3) + A * W + B * W @ W
+
+    @classmethod
+    def Phi_so3(cls, omega):
+        """
+        Phi(omega) = I + 1/2 ad_omega + 1/12 ad_omega^2 + ...
+        Here ad_omega = hat(omega).
+
+        This truncated form is usually sufficient for small dt.
+        """
+        omega = np.asarray(omega, dtype=float).reshape(3)
+        W = cls.hat(omega)
+        return np.eye(3) + 0.5 * W + (1.0 / 12.0) * W @ W
+
+    def predict_measurement(self, R_minus):
+        """
+        Returns stacked predicted direction measurements:
+            yhat = [R_minus^T e_1; ...; R_minus^T e_m]
+        shape: (3m,)
+        """
+        R_minus = np.asarray(R_minus, dtype=float).reshape(3, 3)
+        return np.concatenate([R_minus.T @ e for e in self.E])
+
+    # ------------------------------------------------------------
+    # 1) Define A_{k-1}, G_{k-1}, H_k
+    # ------------------------------------------------------------
+
+    def define_AGH(self, R_minus, Omega_k, R_prev_plus=None):
+        """
+        Build time-varying A_{k-1}, G_{k-1}, H_k.
+
+        Parameters
+        ----------
+        R_minus : (3,3)
+            Predicted attitude R_k^-.
+        Omega_k : (3,)
+            Body angular velocity sample.
+        R_prev_plus : (3,3), optional
+            Previous corrected attitude R_{k-1}^+.
+            If omitted, R_minus is used in G as a first-order approximation.
+
+        Returns
+        -------
+        A : (3,3)
+        G : (3,3)
+        H : (3m,3)
+        """
+        R_minus = np.asarray(R_minus, dtype=float).reshape(3, 3)
+        Omega_k = np.asarray(Omega_k, dtype=float).reshape(3)
+
+        if R_prev_plus is None:
+            R_for_G = R_minus
+        else:
+            R_for_G = np.asarray(R_prev_plus, dtype=float).reshape(3, 3)
+
+        A = np.eye(3)
+
+        G = -self.dt * R_for_G @ self.Phi_so3(-self.dt * Omega_k)
+
+        H_blocks = []
+        for e in self.E:
+            yhat_i = R_minus.T @ e
+            H_blocks.append(self.hat(yhat_i))
+
+        H = np.vstack(H_blocks)
+
+        return A, G, H
+
+    # ------------------------------------------------------------
+    # 2) Iteratively call KF and update R_k^+
+    # ------------------------------------------------------------
+
+    def run_filter(self, R0_plus, P0, Omegas, Ys, Sigma_q, Sigma_m):
+        """
+        Run the SO(3) error-state EKF.
+
+        Parameters
+        ----------
+        R0_plus : (3,3)
+            Initial corrected attitude.
+        P0 : (3,3)
+            Initial error covariance.
+        Omegas : (T,3)
+            Gyroscope samples.
+        Ys : (T,3m)
+            Stacked vector measurements.
+        Sigma_q : (3,3)
+            Process noise covariance for gyro/process noise.
+        Sigma_m : (3m,3m)
+            Measurement noise covariance.
+
+        Returns
+        -------
+        results : dict
+            Contains R_plus_list, R_minus_list, yhat_list, K_list, P_list, S_list.
+        """
+        R_plus = np.asarray(R0_plus, dtype=float).reshape(3, 3)
+        P = np.asarray(P0, dtype=float).reshape(3, 3)
+
+        Omegas = np.asarray(Omegas, dtype=float)
+        Ys = np.asarray(Ys, dtype=float)
+
+        T = Omegas.shape[0]
+        if Ys.shape[0] != T:
+            raise ValueError("`Omegas` and `Ys` must have the same number of time steps.")
+
+        R_plus_list = []
+        R_minus_list = []
+        yhat_list = []
+        K_list = []
+        P_list = []
+        S_list = []
+
+        m_err = np.zeros(3)
+
+        for k in range(T):
+            Omega_k = Omegas[k]
+            y_k = Ys[k]
+
+            # group prediction
+            R_minus = R_plus @ self.exp_so3(self.dt * Omega_k)
+
+            # time-varying linearizations
+            A, G, H = self.define_AGH(
+                R_minus=R_minus,
+                Omega_k=Omega_k,
+                R_prev_plus=R_plus,
+            )
+
+            # predicted output and innovation
+            yhat_k = self.predict_measurement(R_minus)
+            residual_k = y_k - yhat_k
+
+            # Linear KF on the local error state
+            m_upd, P_upd, K, S, (m_pred, P_pred) = self.kf.step(
+                m_prev=m_err,
+                P_prev=P,
+                A=A,
+                Q=Sigma_q,
+                G=G,
+                H=H,
+                y=residual_k,
+                R=Sigma_m,
+            )
+
+            # inject correction into SO(3)
+            delta = m_upd
+            R_plus = R_minus @ self.exp_so3(delta)
+
+            # reset local error mean after injection
+            m_err = np.zeros(3)
+            P = P_upd
+
+            R_minus_list.append(R_minus)
+            R_plus_list.append(R_plus)
+            yhat_list.append(yhat_k)
+            K_list.append(K)
+            P_list.append(P)
+            S_list.append(S)
+
+        return {
+            "R_minus": np.asarray(R_minus_list),
+            "R_plus": np.asarray(R_plus_list),
+            "yhat": np.asarray(yhat_list),
+            "K": K_list,
+            "P": P_list,
+            "S": S_list,
+        }
+
+    # ------------------------------------------------------------
+    # 3) Plot y_k and predicted y_k
+    # ------------------------------------------------------------
+
+    def plot_measurements(self, Ys, Yhat, title="Measured and predicted direction outputs"):
+        """
+        Plot measured y_k and predicted yhat_k using Plotly.
+
+        Parameters
+        ----------
+        Ys : (T,3m)
+            Measured stacked outputs.
+        Yhat : (T,3m)
+            Predicted stacked outputs.
+        """
+        Ys = np.asarray(Ys, dtype=float)
+        Yhat = np.asarray(Yhat, dtype=float)
+
+        if Ys.shape != Yhat.shape:
+            raise ValueError(f"`Ys` and `Yhat` must have same shape; got {Ys.shape} and {Yhat.shape}.")
+
+        T, d = Ys.shape
+        t = np.arange(T)
+
+        fig = go.Figure()
+
+        for j in range(d):
+            fig.add_trace(go.Scatter(
+                x=t,
+                y=Ys[:, j],
+                mode="lines",
+                name=f"y[{j}] measured",
+            ))
+            fig.add_trace(go.Scatter(
+                x=t,
+                y=Yhat[:, j],
+                mode="lines",
+                name=f"y[{j}] predicted",
+                line=dict(dash="dash"),
+            ))
+
+        fig.update_layout(
+            title=title,
+            xaxis_title="Time step k",
+            yaxis_title="Output component",
+            template="plotly_white",
+        )
+
+        return fig        
