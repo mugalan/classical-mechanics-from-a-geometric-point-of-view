@@ -35,7 +35,7 @@ __version__ = _get_version()
 
 # --- Public exports ---
 from .rigid_body_sim import RigidBodySim  # re-export for sims.RigidBodySim
-from .kalman_filter import LinearKF, LinearGaussianSystemSyms
+from .kalman_filter import LinearKF, LinearGaussianSystemSyms, SO3IMUSensorFusionEKF
 
 __all__ = [
     "RigidBodySim",
