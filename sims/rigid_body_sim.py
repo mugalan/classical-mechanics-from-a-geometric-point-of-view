@@ -1587,449 +1587,449 @@ class RigidBodySim:
         return fig, info
 
 
-    # --- Rigid Body EKF ---
-
-    def set_sensor(self, fn: Callable[..., tuple]) -> None:
-        """
-        Register a **sensor callback** used to simulate/ingest IMU-like measurements.
-
-        The callback will be invoked by your code (e.g., inside tests or higher-level
-        loops) to produce:
-        - a 3-vector gyro reading, and
-        - two 3-vectors for the measured body-frame directions of two inertial axes
-            (by convention here: e1 and e3, but your implementation may choose them).
-
-        Expected callable signature
-        ---------------------------
-        fn(R: np.ndarray, omega_body: np.ndarray, *[, ...]) -> tuple
-            Parameters
-            ----------
-            R : (3,3) ndarray
-                Current attitude (body → inertial).
-            omega_body : (3,) ndarray
-                Body-frame angular velocity used to form the gyro measurement.
-            ... : optional keyword args
-                Noise stds, RNG handle, flags (e.g., renormalize), etc.
-
-            Returns
-            -------
-            Omega_meas : (3,) ndarray
-                Gyro measurement (usually `omega_body + noise`).
-            A_n_meas : (3,) ndarray
-                Noisy measurement of `Rᵀ e1` (direction #1 expressed in body frame).
-            A_g_meas : (3,) ndarray
-                Noisy measurement of `Rᵀ e3` (direction #2 expressed in body frame).
-
-        Notes
-        -----
-        - Your EKF’s measurement covariance `Σ_m` should be compatible with the
-        distribution of `A_n_meas` and `A_g_meas` produced by this function.
-        - If you dynamically choose the inertial axes (not strictly e1/e3), keep the
-        EKF’s H/S construction consistent with that choice.
-
-        Examples
-        --------
-        >>> def my_sensor(R, omega_body, sigma_omega=5e-3, sigma_dir=2e-2):
-        ...     # return (Omega_meas, A_n_meas, A_g_meas)
-        ...     ...
-        >>> rb.set_sensor(my_sensor)
-        """
-        self.sensor = fn
-
-    def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None:
-        """
-        Register the **innovation function** L = y - ŷ used by the EKF update.
-
-        The callback computes the stacked residual for two direction measurements.
-        It must return a column vector shaped (6,1) (or a 1-D array convertible to that),
-        consistent with `H ∈ ℝ^{6×3}`.
-
-        Expected callable signature
-        ---------------------------
-        fn(R_pred_minus: np.ndarray, A_n: np.ndarray, A_g: np.ndarray) -> np.ndarray
-            Parameters
-            ----------
-            R_pred_minus : (3,3) ndarray
-                Predicted-minus attitude used to form the predicted measurements.
-            A_n : (3,) ndarray
-                Measured body-frame direction of inertial axis #1 (e.g., `Rᵀ e1`).
-            A_g : (3,) ndarray
-                Measured body-frame direction of inertial axis #2 (e.g., `Rᵀ e3`).
-
-            Returns
-            -------
-            L : (6,1) ndarray
-                Innovation (residual) stacked as:
-                    L = vec([A_n; A_g] - [R^-ᵀ e1; R^-ᵀ e3])
-
-        Notes
-        -----
-        - If you change which inertial axes are used (not strictly e1/e3), this
-        function must mirror that choice so that `ŷ` matches how H is built.
-        - Returning a 1-D array of length 6 is acceptable; it will be reshaped to (6,1)
-        by the EKF before multiplication.
-
-        Examples
-        --------
-        >>> def my_innovation(Rm, A_n, A_g):
-        ...     e1 = np.array([1.,0.,0.]); e3 = np.array([0.,0.,1.])
-        ...     y      = np.vstack([A_n, A_g])
-        ...     y_pred = np.vstack([Rm.T @ e1, Rm.T @ e3])
-        ...     return (y - y_pred).reshape(-1, 1)
-        >>> rb.set_KF_innovation(my_innovation)
-        """
-        self.kf_innovation = fn
-
-    def _linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
-        """
-        A_k-1 = I 
-        G_k-1 = (DeltaT ** 0.5) * R @ Phi(-DeltaT * Omega)
-        H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e2) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
-        Uses the identity R^T hat(e) R = hat(R^T e) for efficiency.
-        """
-        I3 = np.eye(3)
-        Omega = np.asarray(Omega, float).reshape(3,)
-        R = np.asarray(R_for_H, float).reshape(3, 3)
-
-        # A and G
-        A_km1 = np.eye(3) #self.exp_map(DeltaT * Omega) #
-        G_km1 = (DeltaT) * R @  self._Phi_SO3(-DeltaT * Omega) # sqrt Brownian
-
-        # H using e1 & e3
-        e1 = np.array([1., 0., 0.])
-        e2 = np.array([0., 1., 0.])
-        e3 = np.array([0., 0., 1.])
-        H1 = -self.hat_matrix(R.T @ e1) 
-        H2 = -self.hat_matrix(R.T @ e2) 
-        H3 = -self.hat_matrix(R.T @ e3)
-        H_km1 = np.vstack([H1, H2, H3])    # (9,3)
-
-        return A_km1, G_km1, H_km1
-
-    # --- EKF predict/update (intrinsic, e1 & e3) ---
-
-    def predict_update_attitude(
-        self,
-        DeltaT: float,
-        Omega_km1: np.ndarray,       # (3,) body angular velocity
-        R_previous: np.ndarray,      # (3,3) previous attitude (k-1)
-        P_previous: np.ndarray,      # (3,3) previous covariance (k-1)
-        Sigma_q: np.ndarray,         # (3,3) process noise cov (gyro PSD discretized)
-        Sigma_m: np.ndarray,         # (6,6) meas noise cov for stacked [R^T e1; R^T e3]
-        A_1_meas: np.ndarray,        # (3,) measured R^T e1
-        A_2_meas: np.ndarray,        # (3,) measured R^T e2
-        A_3_meas: np.ndarray,        # (3,) measured R^T e3
-    ):
-        """
-        Intrinsic EKF on SO(3) with two direction measurements.
-
-        Discretization (ΔT in the correction):
-            R_k^- = R_{k-1} · exp(ΔT · Ω_{k-1})
-            P_k^- = A P_{k-1} A^T + G Σ_q G^T,    A = I - ΔT·hat(Ω_{k-1}),  G = √ΔT·I
-            H_k   = [ -hat(R_k^-T e1) ; -hat(R_k^-T e3) ]
-            K_k   = P_k^- H_k^T (H_k P_k^- H_k^T + Σ_m)^{-1}
-            R_k   = R_k^- · exp(ΔT · K_k (y_k - ŷ_k^-))
-            P_k   = (I - K_k H_k) P_k^- (I - K_k H_k)^T + K_k Σ_m K_k^T
-
-        Shapes:
-            Ω, delta: (3,),  R: (3,3),  P, Σ_q: (3,3),  Σ_m, S: (9,9),
-            H: (6,3),  K: (3,6),  innovation L: (6,1) or (6,)
-
-        Notes:
-            • Ω must be **body-frame** gyro rate to match A’s definition.
-            • Uses Joseph update and light symmetrization for numerical SPD robustness.
-        """
-        # --- shape checks
-        assert R_previous.shape == (3, 3)
-        assert P_previous.shape == (3, 3)
-        assert Sigma_q.shape == (3, 3)
-        assert Sigma_m.shape == (9, 9)
-        assert A_1_meas.shape == (3,)
-        assert A_2_meas.shape == (3,)
-        assert A_3_meas.shape == (3,)
-
-        I3 = np.eye(3)
-
-        # 1) State prediction
-        R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1) 
-
-        # 2) Linearize at predicted-minus attitude (H_k at R_k^-)
-        A_km1, G_km1, H_km1 = self._linearization_attitude_kinematics(DeltaT, Omega_km1, R_pred_minus)
-
-        # 3) Covariance prediction
-        P_pred_minus = A_km1 @ P_previous @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
-
-        # 4) Innovation 
-        L = self.kf_innovation(R_pred_minus, A_1_meas, A_2_meas, A_3_meas)
-
-        # 5) Kalman gain (stable solve; enforce symmetry + tiny jitter on S)
-        S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m
-        # Symmetrize for numerical stability
-        S = 0.5 * (S + S.T)
-        # Add a small jitter (size based on H_km1 output dimension)
-        S += 1e-12 * np.eye(S.shape[0])
-
-        # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-) → K = [(S^T)\(H P^-)]^T
-        K = DeltaT * np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
-
-        # 6) correction with dt and clamp
-        # delta = (DeltaT * (K @ L)).reshape(3,)
-        delta = ((K @ L)).reshape(3,)
-        n = np.linalg.norm(delta)
-        if n > 0.2:       # ~11.5 deg cap
-            delta *= 0.2 / n
-        # R_pred = R_pred_minus @ self.exp_map(delta) #Left invariant outputs
-        R_pred = self.exp_map(delta) @ R_pred_minus #Right invariant outputs
-
-
-        # 7) Covariance update (Joseph + symmetrize)
-        IKH = (I3 - K @ H_km1)
-        P_pred = IKH @ P_pred_minus @ IKH.T + K @ Sigma_m @ K.T
-        P_pred = 0.5 * (P_pred + P_pred.T)
-
-        return R_pred, P_pred, K, H_km1, S
-
-    def run_offline_EKF_analysis(self, trajectory, dt=0.01, 
-                                Sigma_q_factor=1.0, Sigma_m_factor=1.0,
-                                sigma_omega=5e-3, sigma_dir=2e-2,
-                                sigma_init_deg=10.0):
-        """
-        Run an offline attitude EKF over a simulated trajectory
-        and produce diagnostic plots.
-
-        Parameters
-        ----------
-        trajectory : list
-            List of simulation states [(X_k)], where each X_k contains
-            [ [R, o], omega, p, Xc ], i.e. rotation, angular velocity, etc.
-        dt : float
-            Time step [s].
-        Sigma_q : ndarray(3x3), optional
-            Process noise covariance. If None, default uses (sigma_omega**2)*I3.
-        Sigma_m : ndarray(9x9), optional
-            Measurement noise covariance. If None, default uses (sigma_dir**2)*I9.
-        sigma_omega, sigma_dir : float
-            Sensor noise standard deviations.
-        sigma_init_deg : float
-            Initial attitude uncertainty [deg].
-        """
-
-        # --- defaults ---
-        sigma_omega_discrete = sigma_omega /(dt**0.5) # Scaled to discrete time step
-        Sigma_q = Sigma_q_factor * (sigma_omega ** 2) * np.eye(3)
-        Sigma_m = Sigma_m_factor * (sigma_dir ** 2) * np.eye(9)
-
-        deg_to_rad = np.pi / 180.0
-        Sigma_p0 = (sigma_init_deg * deg_to_rad)**2 * np.eye(3)
-
-        # --- initial filter state ---
-        R_hat = trajectory[0][0][0]  # use true initial orientation
-        P_hat = Sigma_p0.copy()
-
-        # --- preallocate metrics ---
-        N = len(trajectory)
-        t = np.arange(N) * dt
-        err_deg, trace_err, lambda_max, ang_1sigma_deg = [], [], [], []
-
-        # --- helper: rotation angle from R ---
-        def angle_from_R(R):
-            c = (np.trace(R) - 1.0) * 0.5
-            c = float(np.clip(c, -1.0, 1.0))
-            return np.arccos(c)
-
-        # --- main loop ---
-        for k in range(N):
-            Xk = trajectory[k]
-            R_true = Xk[0][0]
-            omega_spatial = Xk[1]
-            omega_body = R_true.T @ omega_spatial
-
-            # noisy sensor measurements
-            Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
-                dt, R_true, omega_body, sigma_omega, sigma_dir
-            )
-
-            # EKF step
-            R_hat, P_hat, K, H, S = self.predict_update_attitude(
-                DeltaT=dt,
-                Omega_km1=Omega_meas,
-                R_previous=R_hat,
-                P_previous=P_hat,
-                Sigma_q=Sigma_q,
-                Sigma_m=Sigma_m,
-                A_1_meas=A_1_meas,
-                A_2_meas=A_2_meas,
-                A_3_meas=A_3_meas,
-            )
-
-            # attitude error metrics
-            R_err = R_hat.T @ R_true
-            err_deg.append(np.degrees(angle_from_R(R_err)))
-            trace_err.append(3.0 - np.trace(R_err))
-
-            # covariance quality
-            P_sym = 0.5 * (P_hat + P_hat.T)
-            w = np.linalg.eigvalsh(P_sym)
-            lam_max = float(w[-1])
-            lambda_max.append(lam_max)
-            ang_1sigma_deg.append(np.degrees(np.sqrt(max(lam_max, 0.0))))
-
-        # --- summary printout ---
-        print("==== Offline EKF Analysis ====")
-        print(f"Final attitude error: {err_deg[-1]:.3f} deg")
-        print(f"Median attitude error: {np.median(err_deg):.3f} deg")
-        print(f"Final trace error: {trace_err[-1]:.6f}")
-        print(f"Median trace error: {np.median(trace_err):.6f}")
-        print(f"Final √λ_max(P): {ang_1sigma_deg[-1]:.3f} deg (1σ equivalent)")
-
-        # --- plots ---
-        # 1. Trace error vs time
-        fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(x=t, y=trace_err, mode="lines",
-                                    name="ε_tr = 3 - tr(R_trueᵀ R_hat)"))
-        fig_line.update_layout(
-            title="Trace misalignment vs time (offline EKF on simulated trajectory)",
-            xaxis_title="Time (s)",
-            yaxis_title="Trace error (0 = perfect alignment)",
-        )
-
-        # 2. Histogram of trace error
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Histogram(x=trace_err, nbinsx=50, name="trace error"))
-        fig_hist.update_layout(
-            title="Histogram of trace misalignment (offline EKF)",
-            xaxis_title="Trace error",
-            yaxis_title="Count",
-            bargap=0.05,
-        )
-
-        # 3. Covariance eigenvalues
-        fig_cov = go.Figure()
-        fig_cov.add_trace(go.Scatter(x=t, y=lambda_max, mode="lines", name="λ_max(P) [rad²]"))
-        fig_cov.add_trace(go.Scatter(x=t, y=ang_1sigma_deg, mode="lines",
-                                    name="√λ_max(P) [deg]", yaxis="y2"))
-        fig_cov.update_layout(
-            title="Covariance magnitude over time (offline EKF)",
-            xaxis_title="Time (s)",
-            yaxis=dict(title="Largest eigenvalue λ_max(P) [rad²]"),
-            yaxis2=dict(title="1σ angle √λ_max(P) [deg]", overlaying="y", side="right"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0)
-        )
-
-        # show
-        fig_line.show()
-        fig_hist.show()
-        fig_cov.show()
-
-        return dict(
-            time=t,
-            err_deg=np.array(err_deg),
-            trace_err=np.array(trace_err),
-            lambda_max=np.array(lambda_max),
-            ang_1sigma_deg=np.array(ang_1sigma_deg),
-            figs=(fig_line, fig_hist, fig_cov),
-        )
-
-    def auto_tune_EKF(self, trajectory, Sigma_p0,
-                    sigma_omega=5e-3, sigma_dir=2e-2,
-                    dt=0.01, steps=10000,
-                    omega_body=None,
-                    q_scales=[0.1, 1.0, 10.0, 100.0],
-                    m_scales=[0.01, 0.1, 1.0, 10.0],
-                    verbose=True):
-        """
-        Auto-tune EKF by sweeping over Sigma_q and Sigma_m scales.
-        Evaluates performance based on final and median attitude RMSE.
-
-        Parameters
-        ----------
-        trajectory : ndarray
-            The trajectory.
-        Sigma_p0 : ndarray(3x3)
-            Initial covariance.
-        sigma_omega, sigma_dir : float
-            Sensor noise standard deviations (gyro, direction).
-        dt : float
-            Time step [s].
-        omega_body : ndarray(3,), optional
-            Constant body angular velocity [rad/s]; if None → [1,1,1].
-        q_scales, m_scales : list of floats
-            Multiplicative scales for Sigma_q and Sigma_m.
-        verbose : bool
-            Print intermediate results.
-
-        Returns
-        -------
-        best_config : tuple (q_scale, m_scale)
-        results : list of tuples (q_scale, m_scale, final_err, median_err)
-        """
-        sigma_omega_discrete = sigma_omega / (dt**0.5) #Scaled to discrete time step
-        # --- search results ---
-        best_config = None
-        best_score = np.inf
-        results = []
-
-        for q_scale in q_scales:
-            for m_scale in m_scales:
-                # Covariances
-                Sigma_q = q_scale * (sigma_omega ** 2) * np.eye(3)
-                Sigma_m = m_scale * (sigma_dir ** 2) * np.eye(9)
-
-                # Initialize filter
-                R_hat = deepcopy(trajectory[0][0][0])  # initial attitude
-                P_hat = Sigma_p0.copy()
-
-                # Metrics
-                err_deg = []
-
-                for Xk in trajectory:
-                    R_true = Xk[0][0]
-                    omega_spatial = Xk[1]
-                    omega_body_k = R_true.T @ omega_spatial
-
-                    # generate noisy measurements
-                    Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
-                        dt, R_true, omega_body_k, sigma_omega, sigma_dir
-                    )
-
-                    # EKF predict + update
-                    R_hat, P_hat, *_ = self.predict_update_attitude(
-                        DeltaT=dt,
-                        Omega_km1=Omega_meas,
-                        R_previous=R_hat,
-                        P_previous=P_hat,
-                        Sigma_q=Sigma_q,
-                        Sigma_m=Sigma_m,
-                        A_1_meas=A_1_meas,
-                        A_2_meas=A_2_meas,
-                        A_3_meas=A_3_meas,
-                    )
-
-                    # compute attitude error
-                    R_err = R_hat.T @ R_true
-                    c = np.clip((np.trace(R_err) - 1.0) * 0.5, -1.0, 1.0)
-                    angle_rad = np.arccos(c)
-                    err_deg.append(np.degrees(angle_rad))
-
-                # summarize
-                final_err = err_deg[-1]
-                median_err = np.median(err_deg)
-                score = final_err + median_err
-
-                results.append((q_scale, m_scale, final_err, median_err))
-
-                if verbose:
-                    print(f"[q={q_scale:.2e}, m={m_scale:.2e}] Final: {final_err:.3f}°, Median: {median_err:.3f}°")
-
-                if score < best_score:
-                    best_score = score
-                    best_config = (q_scale, m_scale)
-
-        print("\n✅ Best configuration found:")
-        print(f"Sigma_q = {best_config[0]:.2e} × base (σ_ω² I₃)")
-        print(f"Sigma_m = {best_config[1]:.2e} × base (σ_dir² I₉)")
-
-        return best_config, results
+    # --- Rigid Body EKF --- OBSOLTE moved to EKF repo
+
+    # def set_sensor(self, fn: Callable[..., tuple]) -> None:
+    #     """
+    #     Register a **sensor callback** used to simulate/ingest IMU-like measurements.
+
+    #     The callback will be invoked by your code (e.g., inside tests or higher-level
+    #     loops) to produce:
+    #     - a 3-vector gyro reading, and
+    #     - two 3-vectors for the measured body-frame directions of two inertial axes
+    #         (by convention here: e1 and e3, but your implementation may choose them).
+
+    #     Expected callable signature
+    #     ---------------------------
+    #     fn(R: np.ndarray, omega_body: np.ndarray, *[, ...]) -> tuple
+    #         Parameters
+    #         ----------
+    #         R : (3,3) ndarray
+    #             Current attitude (body → inertial).
+    #         omega_body : (3,) ndarray
+    #             Body-frame angular velocity used to form the gyro measurement.
+    #         ... : optional keyword args
+    #             Noise stds, RNG handle, flags (e.g., renormalize), etc.
+
+    #         Returns
+    #         -------
+    #         Omega_meas : (3,) ndarray
+    #             Gyro measurement (usually `omega_body + noise`).
+    #         A_n_meas : (3,) ndarray
+    #             Noisy measurement of `Rᵀ e1` (direction #1 expressed in body frame).
+    #         A_g_meas : (3,) ndarray
+    #             Noisy measurement of `Rᵀ e3` (direction #2 expressed in body frame).
+
+    #     Notes
+    #     -----
+    #     - Your EKF’s measurement covariance `Σ_m` should be compatible with the
+    #     distribution of `A_n_meas` and `A_g_meas` produced by this function.
+    #     - If you dynamically choose the inertial axes (not strictly e1/e3), keep the
+    #     EKF’s H/S construction consistent with that choice.
+
+    #     Examples
+    #     --------
+    #     >>> def my_sensor(R, omega_body, sigma_omega=5e-3, sigma_dir=2e-2):
+    #     ...     # return (Omega_meas, A_n_meas, A_g_meas)
+    #     ...     ...
+    #     >>> rb.set_sensor(my_sensor)
+    #     """
+    #     self.sensor = fn
+
+    # def set_KF_innovation(self, fn: Callable[..., np.ndarray]) -> None:
+    #     """
+    #     Register the **innovation function** L = y - ŷ used by the EKF update.
+
+    #     The callback computes the stacked residual for two direction measurements.
+    #     It must return a column vector shaped (6,1) (or a 1-D array convertible to that),
+    #     consistent with `H ∈ ℝ^{6×3}`.
+
+    #     Expected callable signature
+    #     ---------------------------
+    #     fn(R_pred_minus: np.ndarray, A_n: np.ndarray, A_g: np.ndarray) -> np.ndarray
+    #         Parameters
+    #         ----------
+    #         R_pred_minus : (3,3) ndarray
+    #             Predicted-minus attitude used to form the predicted measurements.
+    #         A_n : (3,) ndarray
+    #             Measured body-frame direction of inertial axis #1 (e.g., `Rᵀ e1`).
+    #         A_g : (3,) ndarray
+    #             Measured body-frame direction of inertial axis #2 (e.g., `Rᵀ e3`).
+
+    #         Returns
+    #         -------
+    #         L : (6,1) ndarray
+    #             Innovation (residual) stacked as:
+    #                 L = vec([A_n; A_g] - [R^-ᵀ e1; R^-ᵀ e3])
+
+    #     Notes
+    #     -----
+    #     - If you change which inertial axes are used (not strictly e1/e3), this
+    #     function must mirror that choice so that `ŷ` matches how H is built.
+    #     - Returning a 1-D array of length 6 is acceptable; it will be reshaped to (6,1)
+    #     by the EKF before multiplication.
+
+    #     Examples
+    #     --------
+    #     >>> def my_innovation(Rm, A_n, A_g):
+    #     ...     e1 = np.array([1.,0.,0.]); e3 = np.array([0.,0.,1.])
+    #     ...     y      = np.vstack([A_n, A_g])
+    #     ...     y_pred = np.vstack([Rm.T @ e1, Rm.T @ e3])
+    #     ...     return (y - y_pred).reshape(-1, 1)
+    #     >>> rb.set_KF_innovation(my_innovation)
+    #     """
+    #     self.kf_innovation = fn
+
+    # def _linearization_attitude_kinematics(self, DeltaT: float, Omega: np.ndarray, R_for_H: np.ndarray):
+    #     """
+    #     A_k-1 = I 
+    #     G_k-1 = (DeltaT ** 0.5) * R @ Phi(-DeltaT * Omega)
+    #     H_k-1 = [ -R^T hat(e1) R ; -R^T hat(e2) R ; -R^T hat(e3) R ]  (stacked 6x3), using predicted-minus attitude.
+    #     Uses the identity R^T hat(e) R = hat(R^T e) for efficiency.
+    #     """
+    #     I3 = np.eye(3)
+    #     Omega = np.asarray(Omega, float).reshape(3,)
+    #     R = np.asarray(R_for_H, float).reshape(3, 3)
+
+    #     # A and G
+    #     A_km1 = np.eye(3) #self.exp_map(DeltaT * Omega) #
+    #     G_km1 = (DeltaT) * R @  self._Phi_SO3(-DeltaT * Omega) # sqrt Brownian
+
+    #     # H using e1 & e3
+    #     e1 = np.array([1., 0., 0.])
+    #     e2 = np.array([0., 1., 0.])
+    #     e3 = np.array([0., 0., 1.])
+    #     H1 = -self.hat_matrix(R.T @ e1) 
+    #     H2 = -self.hat_matrix(R.T @ e2) 
+    #     H3 = -self.hat_matrix(R.T @ e3)
+    #     H_km1 = np.vstack([H1, H2, H3])    # (9,3)
+
+    #     return A_km1, G_km1, H_km1
+
+    # # --- EKF predict/update (intrinsic, e1 & e3) ---
+
+    # def predict_update_attitude(
+    #     self,
+    #     DeltaT: float,
+    #     Omega_km1: np.ndarray,       # (3,) body angular velocity
+    #     R_previous: np.ndarray,      # (3,3) previous attitude (k-1)
+    #     P_previous: np.ndarray,      # (3,3) previous covariance (k-1)
+    #     Sigma_q: np.ndarray,         # (3,3) process noise cov (gyro PSD discretized)
+    #     Sigma_m: np.ndarray,         # (6,6) meas noise cov for stacked [R^T e1; R^T e3]
+    #     A_1_meas: np.ndarray,        # (3,) measured R^T e1
+    #     A_2_meas: np.ndarray,        # (3,) measured R^T e2
+    #     A_3_meas: np.ndarray,        # (3,) measured R^T e3
+    # ):
+    #     """
+    #     Intrinsic EKF on SO(3) with two direction measurements.
+
+    #     Discretization (ΔT in the correction):
+    #         R_k^- = R_{k-1} · exp(ΔT · Ω_{k-1})
+    #         P_k^- = A P_{k-1} A^T + G Σ_q G^T,    A = I - ΔT·hat(Ω_{k-1}),  G = √ΔT·I
+    #         H_k   = [ -hat(R_k^-T e1) ; -hat(R_k^-T e3) ]
+    #         K_k   = P_k^- H_k^T (H_k P_k^- H_k^T + Σ_m)^{-1}
+    #         R_k   = R_k^- · exp(ΔT · K_k (y_k - ŷ_k^-))
+    #         P_k   = (I - K_k H_k) P_k^- (I - K_k H_k)^T + K_k Σ_m K_k^T
+
+    #     Shapes:
+    #         Ω, delta: (3,),  R: (3,3),  P, Σ_q: (3,3),  Σ_m, S: (9,9),
+    #         H: (6,3),  K: (3,6),  innovation L: (6,1) or (6,)
+
+    #     Notes:
+    #         • Ω must be **body-frame** gyro rate to match A’s definition.
+    #         • Uses Joseph update and light symmetrization for numerical SPD robustness.
+    #     """
+    #     # --- shape checks
+    #     assert R_previous.shape == (3, 3)
+    #     assert P_previous.shape == (3, 3)
+    #     assert Sigma_q.shape == (3, 3)
+    #     assert Sigma_m.shape == (9, 9)
+    #     assert A_1_meas.shape == (3,)
+    #     assert A_2_meas.shape == (3,)
+    #     assert A_3_meas.shape == (3,)
+
+    #     I3 = np.eye(3)
+
+    #     # 1) State prediction
+    #     R_pred_minus = R_previous @ self.exp_map(DeltaT * Omega_km1) 
+
+    #     # 2) Linearize at predicted-minus attitude (H_k at R_k^-)
+    #     A_km1, G_km1, H_km1 = self._linearization_attitude_kinematics(DeltaT, Omega_km1, R_pred_minus)
+
+    #     # 3) Covariance prediction
+    #     P_pred_minus = A_km1 @ P_previous @ A_km1.T + G_km1 @ Sigma_q @ G_km1.T
+
+    #     # 4) Innovation 
+    #     L = self.kf_innovation(R_pred_minus, A_1_meas, A_2_meas, A_3_meas)
+
+    #     # 5) Kalman gain (stable solve; enforce symmetry + tiny jitter on S)
+    #     S = H_km1 @ P_pred_minus @ H_km1.T + Sigma_m
+    #     # Symmetrize for numerical stability
+    #     S = 0.5 * (S + S.T)
+    #     # Add a small jitter (size based on H_km1 output dimension)
+    #     S += 1e-12 * np.eye(S.shape[0])
+
+    #     # K = P^- H^T S^{-1}  via solve on S^T · K^T = (H P^-) → K = [(S^T)\(H P^-)]^T
+    #     K = DeltaT * np.linalg.solve(S.T, (H_km1 @ P_pred_minus)).T
+
+    #     # 6) correction with dt and clamp
+    #     # delta = (DeltaT * (K @ L)).reshape(3,)
+    #     delta = ((K @ L)).reshape(3,)
+    #     n = np.linalg.norm(delta)
+    #     if n > 0.2:       # ~11.5 deg cap
+    #         delta *= 0.2 / n
+    #     # R_pred = R_pred_minus @ self.exp_map(delta) #Left invariant outputs
+    #     R_pred = self.exp_map(delta) @ R_pred_minus #Right invariant outputs
+
+
+    #     # 7) Covariance update (Joseph + symmetrize)
+    #     IKH = (I3 - K @ H_km1)
+    #     P_pred = IKH @ P_pred_minus @ IKH.T + K @ Sigma_m @ K.T
+    #     P_pred = 0.5 * (P_pred + P_pred.T)
+
+    #     return R_pred, P_pred, K, H_km1, S
+
+    # def run_offline_EKF_analysis(self, trajectory, dt=0.01, 
+    #                             Sigma_q_factor=1.0, Sigma_m_factor=1.0,
+    #                             sigma_omega=5e-3, sigma_dir=2e-2,
+    #                             sigma_init_deg=10.0):
+    #     """
+    #     Run an offline attitude EKF over a simulated trajectory
+    #     and produce diagnostic plots.
+
+    #     Parameters
+    #     ----------
+    #     trajectory : list
+    #         List of simulation states [(X_k)], where each X_k contains
+    #         [ [R, o], omega, p, Xc ], i.e. rotation, angular velocity, etc.
+    #     dt : float
+    #         Time step [s].
+    #     Sigma_q : ndarray(3x3), optional
+    #         Process noise covariance. If None, default uses (sigma_omega**2)*I3.
+    #     Sigma_m : ndarray(9x9), optional
+    #         Measurement noise covariance. If None, default uses (sigma_dir**2)*I9.
+    #     sigma_omega, sigma_dir : float
+    #         Sensor noise standard deviations.
+    #     sigma_init_deg : float
+    #         Initial attitude uncertainty [deg].
+    #     """
+
+    #     # --- defaults ---
+    #     sigma_omega_discrete = sigma_omega /(dt**0.5) # Scaled to discrete time step
+    #     Sigma_q = Sigma_q_factor * (sigma_omega ** 2) * np.eye(3)
+    #     Sigma_m = Sigma_m_factor * (sigma_dir ** 2) * np.eye(9)
+
+    #     deg_to_rad = np.pi / 180.0
+    #     Sigma_p0 = (sigma_init_deg * deg_to_rad)**2 * np.eye(3)
+
+    #     # --- initial filter state ---
+    #     R_hat = trajectory[0][0][0]  # use true initial orientation
+    #     P_hat = Sigma_p0.copy()
+
+    #     # --- preallocate metrics ---
+    #     N = len(trajectory)
+    #     t = np.arange(N) * dt
+    #     err_deg, trace_err, lambda_max, ang_1sigma_deg = [], [], [], []
+
+    #     # --- helper: rotation angle from R ---
+    #     def angle_from_R(R):
+    #         c = (np.trace(R) - 1.0) * 0.5
+    #         c = float(np.clip(c, -1.0, 1.0))
+    #         return np.arccos(c)
+
+    #     # --- main loop ---
+    #     for k in range(N):
+    #         Xk = trajectory[k]
+    #         R_true = Xk[0][0]
+    #         omega_spatial = Xk[1]
+    #         omega_body = R_true.T @ omega_spatial
+
+    #         # noisy sensor measurements
+    #         Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
+    #             dt, R_true, omega_body, sigma_omega, sigma_dir
+    #         )
+
+    #         # EKF step
+    #         R_hat, P_hat, K, H, S = self.predict_update_attitude(
+    #             DeltaT=dt,
+    #             Omega_km1=Omega_meas,
+    #             R_previous=R_hat,
+    #             P_previous=P_hat,
+    #             Sigma_q=Sigma_q,
+    #             Sigma_m=Sigma_m,
+    #             A_1_meas=A_1_meas,
+    #             A_2_meas=A_2_meas,
+    #             A_3_meas=A_3_meas,
+    #         )
+
+    #         # attitude error metrics
+    #         R_err = R_hat.T @ R_true
+    #         err_deg.append(np.degrees(angle_from_R(R_err)))
+    #         trace_err.append(3.0 - np.trace(R_err))
+
+    #         # covariance quality
+    #         P_sym = 0.5 * (P_hat + P_hat.T)
+    #         w = np.linalg.eigvalsh(P_sym)
+    #         lam_max = float(w[-1])
+    #         lambda_max.append(lam_max)
+    #         ang_1sigma_deg.append(np.degrees(np.sqrt(max(lam_max, 0.0))))
+
+    #     # --- summary printout ---
+    #     print("==== Offline EKF Analysis ====")
+    #     print(f"Final attitude error: {err_deg[-1]:.3f} deg")
+    #     print(f"Median attitude error: {np.median(err_deg):.3f} deg")
+    #     print(f"Final trace error: {trace_err[-1]:.6f}")
+    #     print(f"Median trace error: {np.median(trace_err):.6f}")
+    #     print(f"Final √λ_max(P): {ang_1sigma_deg[-1]:.3f} deg (1σ equivalent)")
+
+    #     # --- plots ---
+    #     # 1. Trace error vs time
+    #     fig_line = go.Figure()
+    #     fig_line.add_trace(go.Scatter(x=t, y=trace_err, mode="lines",
+    #                                 name="ε_tr = 3 - tr(R_trueᵀ R_hat)"))
+    #     fig_line.update_layout(
+    #         title="Trace misalignment vs time (offline EKF on simulated trajectory)",
+    #         xaxis_title="Time (s)",
+    #         yaxis_title="Trace error (0 = perfect alignment)",
+    #     )
+
+    #     # 2. Histogram of trace error
+    #     fig_hist = go.Figure()
+    #     fig_hist.add_trace(go.Histogram(x=trace_err, nbinsx=50, name="trace error"))
+    #     fig_hist.update_layout(
+    #         title="Histogram of trace misalignment (offline EKF)",
+    #         xaxis_title="Trace error",
+    #         yaxis_title="Count",
+    #         bargap=0.05,
+    #     )
+
+    #     # 3. Covariance eigenvalues
+    #     fig_cov = go.Figure()
+    #     fig_cov.add_trace(go.Scatter(x=t, y=lambda_max, mode="lines", name="λ_max(P) [rad²]"))
+    #     fig_cov.add_trace(go.Scatter(x=t, y=ang_1sigma_deg, mode="lines",
+    #                                 name="√λ_max(P) [deg]", yaxis="y2"))
+    #     fig_cov.update_layout(
+    #         title="Covariance magnitude over time (offline EKF)",
+    #         xaxis_title="Time (s)",
+    #         yaxis=dict(title="Largest eigenvalue λ_max(P) [rad²]"),
+    #         yaxis2=dict(title="1σ angle √λ_max(P) [deg]", overlaying="y", side="right"),
+    #         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0)
+    #     )
+
+    #     # show
+    #     fig_line.show()
+    #     fig_hist.show()
+    #     fig_cov.show()
+
+    #     return dict(
+    #         time=t,
+    #         err_deg=np.array(err_deg),
+    #         trace_err=np.array(trace_err),
+    #         lambda_max=np.array(lambda_max),
+    #         ang_1sigma_deg=np.array(ang_1sigma_deg),
+    #         figs=(fig_line, fig_hist, fig_cov),
+    #     )
+
+    # def auto_tune_EKF(self, trajectory, Sigma_p0,
+    #                 sigma_omega=5e-3, sigma_dir=2e-2,
+    #                 dt=0.01, steps=10000,
+    #                 omega_body=None,
+    #                 q_scales=[0.1, 1.0, 10.0, 100.0],
+    #                 m_scales=[0.01, 0.1, 1.0, 10.0],
+    #                 verbose=True):
+    #     """
+    #     Auto-tune EKF by sweeping over Sigma_q and Sigma_m scales.
+    #     Evaluates performance based on final and median attitude RMSE.
+
+    #     Parameters
+    #     ----------
+    #     trajectory : ndarray
+    #         The trajectory.
+    #     Sigma_p0 : ndarray(3x3)
+    #         Initial covariance.
+    #     sigma_omega, sigma_dir : float
+    #         Sensor noise standard deviations (gyro, direction).
+    #     dt : float
+    #         Time step [s].
+    #     omega_body : ndarray(3,), optional
+    #         Constant body angular velocity [rad/s]; if None → [1,1,1].
+    #     q_scales, m_scales : list of floats
+    #         Multiplicative scales for Sigma_q and Sigma_m.
+    #     verbose : bool
+    #         Print intermediate results.
+
+    #     Returns
+    #     -------
+    #     best_config : tuple (q_scale, m_scale)
+    #     results : list of tuples (q_scale, m_scale, final_err, median_err)
+    #     """
+    #     sigma_omega_discrete = sigma_omega / (dt**0.5) #Scaled to discrete time step
+    #     # --- search results ---
+    #     best_config = None
+    #     best_score = np.inf
+    #     results = []
+
+    #     for q_scale in q_scales:
+    #         for m_scale in m_scales:
+    #             # Covariances
+    #             Sigma_q = q_scale * (sigma_omega ** 2) * np.eye(3)
+    #             Sigma_m = m_scale * (sigma_dir ** 2) * np.eye(9)
+
+    #             # Initialize filter
+    #             R_hat = deepcopy(trajectory[0][0][0])  # initial attitude
+    #             P_hat = Sigma_p0.copy()
+
+    #             # Metrics
+    #             err_deg = []
+
+    #             for Xk in trajectory:
+    #                 R_true = Xk[0][0]
+    #                 omega_spatial = Xk[1]
+    #                 omega_body_k = R_true.T @ omega_spatial
+
+    #                 # generate noisy measurements
+    #                 Omega_meas, A_1_meas, A_2_meas, A_3_meas = self.sensor(
+    #                     dt, R_true, omega_body_k, sigma_omega, sigma_dir
+    #                 )
+
+    #                 # EKF predict + update
+    #                 R_hat, P_hat, *_ = self.predict_update_attitude(
+    #                     DeltaT=dt,
+    #                     Omega_km1=Omega_meas,
+    #                     R_previous=R_hat,
+    #                     P_previous=P_hat,
+    #                     Sigma_q=Sigma_q,
+    #                     Sigma_m=Sigma_m,
+    #                     A_1_meas=A_1_meas,
+    #                     A_2_meas=A_2_meas,
+    #                     A_3_meas=A_3_meas,
+    #                 )
+
+    #                 # compute attitude error
+    #                 R_err = R_hat.T @ R_true
+    #                 c = np.clip((np.trace(R_err) - 1.0) * 0.5, -1.0, 1.0)
+    #                 angle_rad = np.arccos(c)
+    #                 err_deg.append(np.degrees(angle_rad))
+
+    #             # summarize
+    #             final_err = err_deg[-1]
+    #             median_err = np.median(err_deg)
+    #             score = final_err + median_err
+
+    #             results.append((q_scale, m_scale, final_err, median_err))
+
+    #             if verbose:
+    #                 print(f"[q={q_scale:.2e}, m={m_scale:.2e}] Final: {final_err:.3f}°, Median: {median_err:.3f}°")
+
+    #             if score < best_score:
+    #                 best_score = score
+    #                 best_config = (q_scale, m_scale)
+
+    #     print("\n✅ Best configuration found:")
+    #     print(f"Sigma_q = {best_config[0]:.2e} × base (σ_ω² I₃)")
+    #     print(f"Sigma_m = {best_config[1]:.2e} × base (σ_dir² I₉)")
+
+    #     return best_config, results
 
 ##### Dont Delete
 
