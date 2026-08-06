@@ -1348,7 +1348,7 @@ class SO3IMUSensorFusionBiasEKF:
     # 1) Define A_{k-1}, G_{k-1}, H_k
     # ------------------------------------------------------------
 
-     def define_AGH(self, R_minus, Omega_k, b_minus, R_prev_plus=None):
+    def define_AGH(self, R_minus, Omega_k, b_minus, R_prev_plus=None):
         R_minus = np.asarray(R_minus, dtype=float).reshape(3, 3)
         Omega_k = np.asarray(Omega_k, dtype=float).reshape(3)
         b_minus = np.asarray(b_minus, dtype=float).reshape(3)
