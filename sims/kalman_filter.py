@@ -1323,58 +1323,71 @@ class SO3IMUSensorFusionBiasEKF:
         R_minus = np.asarray(R_minus, dtype=float).reshape(3, 3)
         return np.concatenate([R_minus.T @ e for e in self.E])
 
+    @classmethod
+    def left_jacobian_so3(cls, omega):
+        """
+        J_l(omega) = Phi(-omega)^{-1}.
+        """
+        omega = np.asarray(omega, dtype=float).reshape(3)
+        theta = np.linalg.norm(omega)
+        W = cls.hat(omega)
+    
+        if theta < 1e-8:
+            return (
+                np.eye(3)
+                + 0.5 * W
+                + (1.0 / 6.0) * W @ W
+            )
+    
+        A = (1.0 - np.cos(theta)) / theta**2
+        B = (theta - np.sin(theta)) / theta**3
+    
+        return np.eye(3) + A * W + B * W @ W
+    
     # ------------------------------------------------------------
     # 1) Define A_{k-1}, G_{k-1}, H_k
     # ------------------------------------------------------------
 
-    def define_AGH(self, R_minus, Omega_k, b_minus, R_prev_plus=None):
-        """
-        Build time-varying A_{k-1}, G_{k-1}, H_k.
-
-        Error state:
-            eta = [eta_R ; eta_b] in R^6
-
-        Returns
-        -------
-        A : (6,6)
-        G : (6,6)
-        H : (3m,6)
-        """
+     def define_AGH(self, R_minus, Omega_k, b_minus, R_prev_plus=None):
         R_minus = np.asarray(R_minus, dtype=float).reshape(3, 3)
         Omega_k = np.asarray(Omega_k, dtype=float).reshape(3)
         b_minus = np.asarray(b_minus, dtype=float).reshape(3)
-
+    
         if R_prev_plus is None:
-            R_for_G = R_minus
+            R_for_F = R_minus
         else:
-            R_for_G = np.asarray(R_prev_plus, dtype=float).reshape(3, 3)
-
+            R_for_F = np.asarray(R_prev_plus, dtype=float).reshape(3, 3)
+    
         Omega_corr = Omega_k - b_minus
-
+    
+        # F = -dt R_{k-1} Phi(-dt Omega_corr)^{-1}
+        F = (
+            -self.dt
+            * R_for_F
+            @ self.left_jacobian_so3(self.dt * Omega_corr)
+        )
+    
+        # Augmented state transition
         A = np.block([
-            [np.eye(3), -self.dt * np.eye(3)],
+            [np.eye(3),          F],
             [np.zeros((3, 3)), np.eye(3)],
         ])
-
-        G_R = -self.dt * R_for_G @ self.Phi_so3(-self.dt * Omega_corr)
-
+    
+        # [gyro noise ; bias random walk]
         G = np.block([
-            [G_R, np.zeros((3, 3))],
+            [F,                np.zeros((3, 3))],
             [np.zeros((3, 3)), np.eye(3)],
         ])
-
-        H_blocks = []
-        for e in self.E:
-            yhat_i = R_minus.T @ e
-            H_blocks.append(
-                np.hstack([
-                    self.hat(yhat_i),
-                    np.zeros((3, 3)),
-                ])
-            )
-
-        H = np.vstack(H_blocks)
-
+    
+        # Invariant measurement Jacobian
+        H = np.vstack([
+            np.hstack([
+                self.hat(e),
+                np.zeros((3, 3)),
+            ])
+            for e in self.E
+        ])
+    
         return A, G, H
 
     # ------------------------------------------------------------
@@ -1474,7 +1487,15 @@ class SO3IMUSensorFusionBiasEKF:
 
             # Predicted measurement and residual
             yhat_minus_k = self.predict_measurement(R_minus)
-            residual_k = y_k - yhat_minus_k
+            
+            # Transform body-frame measurement residuals into
+            # invariant/spatial coordinates
+            B_k = np.kron(np.eye(m), R_minus)
+            
+            residual_k = B_k @ (y_k - yhat_minus_k)
+            
+            # Corresponding measurement covariance
+            Sigma_m_invariant = B_k @ Sigma_m @ B_k.T
 
             # Linear KF update on local error state [eta_R ; eta_b]
             m_upd, P_upd, K, S, (m_pred, P_pred) = self.kf.step(
@@ -1485,7 +1506,7 @@ class SO3IMUSensorFusionBiasEKF:
                 G=G,
                 H=H,
                 y=residual_k,
-                R=Sigma_m,
+                R=Sigma_m_invariant,
             )
 
             # Split correction
@@ -1493,7 +1514,7 @@ class SO3IMUSensorFusionBiasEKF:
             delta_b = m_upd[3:]
 
             # Inject correction
-            R_plus = R_minus @ self.exp_so3(delta_R)
+            R_plus = self.exp_so3(delta_R) @ R_minus
             b_plus = b_minus + delta_b
 
             # Store predicted or corrected output
