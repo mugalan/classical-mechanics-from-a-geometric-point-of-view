@@ -1041,45 +1041,54 @@ class SO3IMUSensorFusionEKF:
     # 1) Define A_{k-1}, G_{k-1}, H_k
     # ------------------------------------------------------------
 
+    @classmethod
+    def left_jacobian_so3(cls, omega):
+        """
+        J_l(omega) = Phi(-omega)^{-1}.
+        """
+        omega = np.asarray(omega, dtype=float).reshape(3)
+        theta = np.linalg.norm(omega)
+        W = cls.hat(omega)
+    
+        if theta < 1e-8:
+            return (
+                np.eye(3)
+                + 0.5 * W
+                + (1.0 / 6.0) * W @ W
+            )
+    
+        A = (1.0 - np.cos(theta)) / theta**2
+        B = (theta - np.sin(theta)) / theta**3
+    
+        return np.eye(3) + A * W + B * W @ W
+    
     def define_AGH(self, R_minus, Omega_k, R_prev_plus=None):
-        """
-        Build time-varying A_{k-1}, G_{k-1}, H_k.
-
-        Parameters
-        ----------
-        R_minus : (3,3)
-            Predicted attitude R_k^-.
-        Omega_k : (3,)
-            Body angular velocity sample.
-        R_prev_plus : (3,3), optional
-            Previous corrected attitude R_{k-1}^+.
-            If omitted, R_minus is used in G as a first-order approximation.
-
-        Returns
-        -------
-        A : (3,3)
-        G : (3,3)
-        H : (3m,3)
-        """
         R_minus = np.asarray(R_minus, dtype=float).reshape(3, 3)
         Omega_k = np.asarray(Omega_k, dtype=float).reshape(3)
-
+    
         if R_prev_plus is None:
             R_for_G = R_minus
         else:
             R_for_G = np.asarray(R_prev_plus, dtype=float).reshape(3, 3)
-
+    
+        # A_{k-1} = I
         A = np.eye(3)
-
-        G = -self.dt * R_for_G @ self.Phi_so3(-self.dt * Omega_k)
-
-        H_blocks = []
-        for e in self.E:
-            yhat_i = R_minus.T @ e
-            H_blocks.append(self.hat(yhat_i))
-
-        H = np.vstack(H_blocks)
-
+    
+        # G_{k-1}
+        # = -dt R_{k-1} Phi(-dt Omega_{k-1})^{-1}
+        # = -dt R_{k-1} J_l(dt Omega_{k-1})
+        G = (
+            -self.dt
+            * R_for_G
+            @ self.left_jacobian_so3(self.dt * Omega_k)
+        )
+    
+        # Invariant measurement Jacobian
+        H = np.vstack([
+            self.hat(e)
+            for e in self.E
+        ])
+    
         return A, G, H
 
     # ------------------------------------------------------------
@@ -1145,8 +1154,15 @@ class SO3IMUSensorFusionEKF:
 
             # predicted output and innovation
             yhat_k = self.predict_measurement(R_minus)
-            residual_k = y_k - yhat_k
-
+            
+            # Transform body-frame residual into invariant/spatial coordinates
+            B_k = np.kron(np.eye(self.E.shape[0]), R_minus)
+            
+            residual_k = B_k @ (y_k - yhat_k)
+            
+            # Corresponding measurement covariance
+            Sigma_m_invariant = B_k @ Sigma_m @ B_k.T
+            
             # Linear KF on the local error state
             m_upd, P_upd, K, S, (m_pred, P_pred) = self.kf.step(
                 m_prev=m_err,
@@ -1156,13 +1172,12 @@ class SO3IMUSensorFusionEKF:
                 G=G,
                 H=H,
                 y=residual_k,
-                R=Sigma_m,
+                R=Sigma_m_invariant,
             )
 
             # inject correction into SO(3)
             delta = m_upd
-            R_plus = R_minus @ self.exp_so3(delta)
-
+            R_plus = self.exp_so3(delta) @ R_minus
             # reset local error mean after injection
             m_err = np.zeros(3)
             P = P_upd
