@@ -1191,400 +1191,575 @@ class RigidBodySim:
         self.trajectory=Xout
         return Xout
 
+
+
+
     def runga_kutta_method(self, dt, Tmax, parameters, ICs):
         """
-        Integrate a rigid body's pose and momenta with a **Lie-group RK4** stepper.
-
-        This integrator advances the composite state
+        Fourth-order Runge–Kutta–Munthe-Kaas integration.
+    
+        Public state:
             X = [[R, o], omega, p, Xc]
-        over t ∈ [0, Tmax] using a fourth-order Runge–Kutta scheme that:
-        • updates attitude R ∈ SO(3) via a **left-increment** R ← exp(dt·ω̄) @ R
-            (preserves orthonormality by construction),
-        • updates translation, linear momentum, and auxiliary/controller state
-            with classical RK4 stage averaging.
-
-        ---------- State & Dynamics ----------
-        State layout:
-            R     : (3,3) rotation matrix (orthonormal, det=+1)
-            o     : (3,)  position
-            omega : (3,)  body angular velocity
-            p     : (3,)  linear momentum
-            Xc    : (...) auxiliary/controller state (any shape)
-
-        Required hooks on `self`:
-            rigid_body_system(parameters, t, X) -> tuple
-                Returns (theta, n, doto, dp, dspi, dXc) at (t, X), where
-                • theta = ||omega|| (scalar),
-                • n     = omega / ||omega|| (unit axis, zero if tiny),
-                • doto  = ȯ (linear velocity),
-                • dp    = ṗ (external/actuator forces),
-                • dspi  = spatial spin rate (time derivative of spatial angular momentum),
-                • dXc   = time derivative of Xc.
-                The product w := theta * n is treated as the **body angular rate** used
-                to build RK4 stage predictors on SO(3).
-            exp_map(v: (3,)) -> (3,3)
-                Exponential map on SO(3): exp_map(v) = exp(hat(v)).
-            r_from_quaternions / hat_matrix (optional elsewhere): not used here.
-
-        Parameters
-        ----------
-        dt : float
-            Fixed time step (seconds).
-        Tmax : float
-            Total simulated time horizon (seconds). The loop executes N=floor(Tmax/dt) steps.
-            Use ceil if you prefer to land exactly on Tmax.
-        parameters : dict
-            Model parameters; recognized keys:
-            • 'II' : (3,3) SPD body inertia matrix (default I3).
-            • Any additional keys are forwarded to `rigid_body_system`.
-        ICs : list/tuple
-            Initial composite state in the same layout as X: [[R0, o0], omega0, p0, Xc0].
-
-        Returns
-        -------
-        Xout : list
-            Sequence of states over the grid (length N+1), including the initial state `ICs`.
-            Each item has the layout [[R, o], omega, p, Xc].
-
-        Algorithm (per step)
-        --------------------
-        1) Evaluate k1 at (t, X).
-        2) Build stage predictor Y1 at t+dt/2 with exp(0.5·dt·w1) and Euler drifts; evaluate k2.
-        3) Build stage predictor Y2 at t+dt/2 with exp(0.5·dt·w2); evaluate k3.
-        4) Build stage predictor Y3 at t+dt with exp(dt·w3); evaluate k4.
-        5) Form RK4 weighted averages:
-            w̄   = (w1 + 2w2 + 2w3 + w4)/6,
-            d•̄  = (k1 + 2k2 + 2k3 + k4)/6 for each translational/momentum/controller rate.
-        6) Update:
-            R_new   = exp(dt·w̄) @ R,
-            o_new   = o   + dt·dō̄,
-            p_new   = p   + dt·dp̄,
-            spi_new = R II Rᵀ omega + dt·ds̄,
-            omega_new = R_new II⁻¹ R_newᵀ spi_new,
-            Xc_new  = Xc + dt·dXc̄.
-
-        Numerical Properties & Notes
-        ----------------------------
-        • SO(3) update is group-consistent and maintains RᵀR=I, det R=+1 up to machine precision.
-        • Stage times are (t, t+dt/2, t+dt/2, t+dt); weights (1,2,2,1)/6 (classical RK4).
-        • The angular stage vector w_i := theta_i n_i must represent a **body-frame** rate to
-        match the left-increment kinematics Ṙ = R·hat(omega_body).
-        • A small-angle safeguard is applied implicitly by exp_map; you may add an explicit check
-        if your exp_map assumes ||v|| > 0.
-
-        Caveats
-        -------
-        • If your dynamics produce **spatial** quantities, convert them to/from the body frame
-        consistently (this routine assumes body w_i and spatial momentum spin dynamics).
-        • The loop uses floor(Tmax/dt); consider adjusting if exact endpoint alignment is required.
-
-        Example
-        -------
-        >>> params = {'II': np.diag([0.1, 0.2, 0.3])}
-        >>> R0 = np.eye(3); o0 = np.zeros(3); omega0 = np.array([0.1, 0.0, 0.0])
-        >>> p0 = np.zeros(3); Xc0 = np.zeros(2)
-        >>> traj = sim.runga_kutta_method(0.01, 1.0, params, [[R0, o0], omega0, p0, Xc0])
-        >>> R1 = traj[-1][0][0]
-        >>> np.allclose(R1.T @ R1, np.eye(3), atol=1e-12)
-        True
+    
+        Conventions:
+            R       : body-to-spatial rotation matrix
+            o       : position of the center of mass
+            omega   : SPATIAL angular velocity
+            p       : spatial linear momentum
+            Xc      : numerical auxiliary/controller state, any array shape
+            II      : constant body-frame inertia about the center of mass
+    
+        Internally integrates:
+            y = (a, o, p, spi, Xc)
+    
+        Here a is the local rotation increment, reset to zero at each
+        time step, and spi is spatial angular momentum:
+            R_stage = exp(hat(a)) @ R_base
+            omega   = R_stage @ invII @ R_stage.T @ spi
+    
+        Required hooks:
+            self.exp_map(a)
+                Returns exp(hat(a)); must handle a = 0.
+    
+            self.rigid_body_system(parameters, t, X)
+                Returns (theta, n, doto, dp, dspi, dXc).
+    
+                dspi must be the derivative of SPATIAL angular momentum.
+                theta and n are accepted but not used by this integrator.
+                The hook must evaluate the supplied stage state X without
+                modifying it or relying on self.state as its stage state.
+    
+        Timing:
+            Retains the original fixed-step convention:
+            N = floor(Tmax / dt), up to roundoff.
+            The final time is N * dt, which may be less than Tmax.
+    
+        Returns:
+            List of states, including a copy of the initial state.
+            Also sets self.state, self.trajectory, and self.times.
+    
+        For a fixed pivot, use inertia and angular momentum about the
+        pivot, with the corresponding dynamics hook.
         """
-        II = parameters.get('II', np.eye(3))
+        if not np.isfinite(dt) or dt <= 0:
+            raise ValueError("dt must be finite and positive.")
+        if not np.isfinite(Tmax) or Tmax < 0:
+            raise ValueError("Tmax must be finite and nonnegative.")
+    
+        II = np.asarray(parameters.get("II", np.eye(3)), dtype=float)
         invII = np.linalg.inv(II)
-
-        # steps: floor hits t in [0, N*dt); use ceil if you want to land on Tmax exactly
-        N = int(np.floor(Tmax / dt + 1e-12))
-        t0 = 0.0
-
-        X = ICs
+    
+        # Copy inputs so the initial conditions are not modified.
+        R = np.array(ICs[0][0], dtype=float, copy=True)
+        o = np.array(ICs[0][1], dtype=float, copy=True)
+        omega = np.array(ICs[1], dtype=float, copy=True)
+        p = np.array(ICs[2], dtype=float, copy=True)
+        Xc = np.array(ICs[3], dtype=float, copy=True)
+    
+        # Spatial angular momentum is the variable we integrate.
+        spi = R @ II @ R.T @ omega
+    
+        X = [[R, o], omega, p, Xc]
         Xout = [X]
-        self.state = ICs
-
+        self.state = X
+    
+        N = int(np.floor(Tmax / dt + 1e-12))
+    
+        def advance(base, slope, step):
+            """Add a scaled derivative to each local-state component."""
+            return tuple(
+                value + step * derivative
+                for value, derivative in zip(base, slope)
+            )
+    
         for k in range(N):
-            t = t0 + k*dt
-            R, o, omega, p, Xc = X[0][0], X[0][1], X[1], X[2], X[3]
-
-            # k1 at (t, X)
-            th1, n1, do1, dp1, ds1, dXc1 = self.rigid_body_system(parameters, t, X)
-
-            # k2 from Y1 at t+dt/2
-            w1 = th1 * n1
-            Y1 = [[ self.exp_map(0.5*dt * w1) @ R, o + 0.5*dt*do1 ],
-                omega + 0.5*dt*w1, p + 0.5*dt*dp1, Xc + 0.5*dt*dXc1]
-            th2, n2, do2, dp2, ds2, dXc2 = self.rigid_body_system(parameters, t + 0.5*dt, Y1)
-
-            # k3 from Y2 at t+dt/2
-            w2 = th2 * n2
-            Y2 = [[ self.exp_map(0.5*dt * w2) @ R, o + 0.5*dt*do2 ],
-                omega + 0.5*dt*w2, p + 0.5*dt*dp2, Xc + 0.5*dt*dXc2]
-            th3, n3, do3, dp3, ds3, dXc3 = self.rigid_body_system(parameters, t + 0.5*dt, Y2)
-
-            # k4 from Y3 at t+dt
-            w3 = th3 * n3
-            Y3 = [[ self.exp_map(dt * w3) @ R, o + dt*do3 ],
-                omega + dt*w3, p + dt*dp3, Xc + dt*dXc3]
-            th4, n4, do4, dp4, ds4, dXc4 = self.rigid_body_system(parameters, t + dt, Y3)
-
-            # RK4 weights
-            w_bar   = (th1*n1 + 2*th2*n2 + 2*th3*n3 + th4*n4) / 6.0
-            do_bar  = (do1     + 2*do2    + 2*do3    + do4   ) / 6.0
-            dp_bar  = (dp1     + 2*dp2    + 2*dp3    + dp4   ) / 6.0
-            ds_bar  = (ds1     + 2*ds2    + 2*ds3    + ds4   ) / 6.0
-            dXc_bar = (dXc1    + 2*dXc2   + 2*dXc3   + dXc4  ) / 6.0
-
-            # group-consistent updates
-            theta = np.linalg.norm(w_bar)
-            if theta > 1e-12:
-                R_new = self.exp_map(dt * w_bar) @ R
-            else:
-                R_new = R
-
-            o_new   = o   + dt * do_bar
-            p_new   = p   + dt * dp_bar
-            spi_new = R @ II @ R.T @ omega + dt * ds_bar
-            omega_new = R_new @ invII @ R_new.T @ spi_new
-            Xc_new  = Xc + dt * dXc_bar
-
-            X = [[R_new, o_new], omega_new, p_new, Xc_new]
+            t = k * dt
+    
+            # All stages use this same reference orientation R.
+            # The local rotation increment starts at zero.
+            y0 = (np.zeros(3), o, p, spi, Xc)
+    
+            # Stage 1: derivative at the start of the step.
+            k1 = self._rk4_function(
+                t, y0, R, parameters, invII
+            )
+    
+            # Stage 2: midpoint of the straight-line predictor using k1.
+            y2 = advance(y0, k1, dt / 2)
+            k2 = self._rk4_function(
+                t + dt / 2, y2, R, parameters, invII
+            )
+    
+            # Stage 3: revised midpoint predictor, again based at y0.
+            y3 = advance(y0, k2, dt / 2)
+            k3 = self._rk4_function(
+                t + dt / 2, y3, R, parameters, invII
+            )
+    
+            # Stage 4: endpoint predictor based at y0.
+            y4 = advance(y0, k3, dt)
+            k4 = self._rk4_function(
+                t + dt, y4, R, parameters, invII
+            )
+    
+            # Average derivatives of (a, o, p, spi, Xc).
+            rate = tuple(
+                (d1 + 2 * d2 + 2 * d3 + d4) / 6
+                for d1, d2, d3, d4 in zip(k1, k2, k3, k4)
+            )
+    
+            a, o, p, spi, Xc = advance(y0, rate, dt)
+    
+            # Reconstruct the new orientation and spatial angular velocity.
+            R = self.exp_map(a) @ R
+            omega = R @ invII @ R.T @ spi
+    
+            X = [[R, o], omega, p, Xc]
             Xout.append(X)
             self.state = X
-
+    
+        self.times = dt * np.arange(N + 1)
         self.trajectory = Xout
         return Xout
-
-    def _rk4_function(self, dtk, X_base, tk, Xk, parameters, invII=None):
+    
+    
+    def _rk4_function(self, tk, yk, R_base, parameters, invII):
         """
-        One RK substep: advance a state Xk forward by dtk using dynamics at (tk, Xk).
-        Returns a new temporary state (R_next, o_next, omega_next, p_next, Xc_next)
-        built RELATIVE TO Xk (not X_base).
+        Evaluate the local-state derivative at one RK4 stage.
+    
+        Arguments:
+            yk = (a, o, p, spi, Xc)
+            R_base = orientation at the START of the full time step
+    
+        Returns:
+            (da, doto, dp, dspi, dXc)
+    
+        This replaces the old helper: it evaluates a derivative,
+        rather than advancing a state.
         """
-        II = parameters.get('II', np.eye(3))
-        if invII is None:
-            invII = np.linalg.inv(II)
-
-        # dynamics at the stage point (tk, Xk)
-        theta, n, doto, dp, dspi, dXc = self.rigid_body_system(parameters, tk, Xk)
-
-        # unpack the STAGE BASE (use Xk as the reference)
-        Rk, ok   = Xk[0]
-        omegak   = Xk[1]
-        pk       = Xk[2]
-        Xck      = Xk[3]
-
-        # incremental rotation from stage angular vector w = theta*n
-        w = theta * n
-        R_next = self.exp_map(dtk * w) @ Rk
-
-        # advance translational/momentum/controller from STAGE BASE
-        o_next   = ok  + dtk * doto
-        p_next   = pk  + dtk * dp
-        spi_next = Rk @ II @ Rk.T @ omegak + dtk * dspi    # spatial angular momentum
-        omega_next = R_next @ invII @ R_next.T @ spi_next  # body rate at new frame
-        Xc_next = Xck + dtk * dXc
-
-        return [[R_next, o_next], omega_next, p_next, Xc_next]
-
-    def simulating_a_cube(self, dt, Tmax, cubeDimensions, parameters,ICs):
-        XX=self.cube_vertices(cubeDimensions);
-
-        #Xs=self.eulers_method(dt,Tmax,parameters,ICs);
-        Xs=self.runga_kutta_method(dt,Tmax,parameters,ICs);
-        ICR=ICs[0][0];
-        XX0=ICR @ XX;
-
-        rotatedVertices=[[XX0]]
-        for X in Xs:
-        #print(X[0])
-            R=X[0][0];
-            o=X[0][1];
-            XXi=self.rotate_and_translate(XX,R,o);
-            XX0=XXi;
-            rotatedVertices+=[[XX0]];
-        return rotatedVertices
-
-    def plot_momentum_energy_intersection(
-        self,
-        *,
-        parameters: dict,
-        ICOmega: np.ndarray,
-        ICR: np.ndarray | None = None,
-        grid_phi: int = 50,
-        grid_theta: int = 100,
-        tol: float = 1e-3,
-        overlay_spatial: bool = False,
-        sphere_opacity: float = 0.35,
-        ellipsoid_opacity: float = 0.35,
-        title: str | None = None,
-        show: bool = True,
-    ):
-        """
-        Plot |π| = const sphere and 2*KE = const ellipsoid in π-space and mark their intersection (polhode).
-
-        Parameters
-        ----------
-        parameters : dict
-            Must include 'II' (3x3 inertia in *body* frame). Symmetric, SPD expected.
-        ICOmega : (3,) array-like
-            Initial angular velocity in body frame (ω₀). Used to set |π| and KE via π₀ = I ω₀.
-        ICR : (3,3) array-like, optional
-            Rotation matrix from body→spatial frame at the instant of interest.
-            If provided with overlay_spatial=True, a spatial-frame overlay is drawn (R·π).
-        grid_phi : int
-            Number of polar samples on the parameter grid (≥ 8 recommended).
-        grid_theta : int
-            Number of azimuth samples on the parameter grid (≥ 16 recommended).
-        tol : float
-            Relative tolerance for detecting the intersection curve on the sphere:
-            mark points where |πᵀ I^{-1} π − 2KE| ≤ tol * (2KE).
-        overlay_spatial : bool
-            If True and `ICR` is provided, overlays the rotated surfaces/curve (spatial frame).
-        sphere_opacity : float
-            Opacity of the |π| sphere surface (0–1).
-        ellipsoid_opacity : float
-            Opacity of the 2KE ellipsoid surface (0–1).
-        title : str, optional
-            Figure title. If None, a default informative title is used.
-        show : bool
-            If True, calls fig.show().
-
-        Returns
-        -------
-        fig : plotly.graph_objects.Figure
-            The constructed figure.
-        info : dict
-            Useful computed scalars: {'magPi', 'KE', 'pi0_body', 'pi0_spatial'(if ICR), 'eigvals', 'eigvecs'}.
-
-        Notes
-        -----
-        - In π-space, the constant-energy surface is an ellipsoid: πᵀ I^{-1} π = 2 KE.
-        In the principal-axes basis (I = diag(λ₁,λ₂,λ₃)), semi-axes are √(2 KE λᵢ).
-        - The intersection with the |π| sphere is the (body-frame) polhode curve.
-        """
-        II = np.asarray(parameters["II"], dtype=float)
-        if II.shape != (3, 3):
-            raise ValueError("parameters['II'] must be a 3x3 matrix")
-        if not np.allclose(II, II.T, atol=1e-10):
-            raise ValueError("Inertia matrix II must be symmetric")
-        # Basic SPD sanity (cholesky)
-        LA.cholesky(II)
-
-        ICOmega = np.asarray(ICOmega, dtype=float).reshape(3,)
-        invII = LA.inv(II)
-
-        # π0, |π|, KE
-        pi0_body = II @ ICOmega
-        magPi = LA.norm(pi0_body)
-        KE = 0.5 * ICOmega @ (II @ ICOmega)  # == 0.5 * pi0^T invII pi0
-
-        # Parametric grid on sphere (body frame)
-        phi = np.linspace(0.0, np.pi, grid_phi)
-        theta = np.linspace(0.0, 2.0 * np.pi, grid_theta)
-        PHI, THETA = np.meshgrid(phi, theta, indexing="ij")  # (P,T)
-
-        # Sphere of radius |π|
-        x1 = magPi * np.sin(PHI) * np.cos(THETA)
-        y1 = magPi * np.sin(PHI) * np.sin(THETA)
-        z1 = magPi * np.cos(PHI)
-
-        # Ellipsoid for π^T invII π = 2KE → in principal axes: axes = sqrt(2 KE * λ)
-        lam, Q = LA.eigh(II)  # II = Q diag(lam) Q^T, lam>0 ascending
-        axes = np.sqrt(2.0 * KE * lam)  # (3,)
-
-        # Build ellipsoid in principal frame then rotate to body frame
-        xp = axes[0] * np.sin(PHI) * np.cos(THETA)
-        yp = axes[1] * np.sin(PHI) * np.sin(THETA)
-        zp = axes[2] * np.cos(PHI)
-        Pp = np.stack([xp, yp, zp], axis=0).reshape(3, -1)        # (3, N)
-        Pb = (Q @ Pp).reshape(3, *xp.shape)                       # (3, P, T)
-        x2, y2, z2 = Pb[0], Pb[1], Pb[2]
-
-        # Intersection on the sphere: evaluate f(π) = π^T invII π - 2KE
-        Ps = np.stack([x1, y1, z1], axis=0).reshape(3, -1)        # sphere points (3,N)
-        f = np.einsum("ij,jn,in->n", invII, Ps, Ps).reshape(x1.shape) - (2.0 * KE)
-        mask = np.abs(f) <= (tol * 2.0 * KE)
-        xi, yi, zi = x1[mask], y1[mask], z1[mask]                 # polhode samples (body frame)
-
-        # Optional spatial overlay via ICR (R body→spatial)
-        traces = []
-        if overlay_spatial and ICR is not None:
-            R = np.asarray(ICR, dtype=float).reshape(3, 3)
-            # Rotate surfaces
-            S_sphere = (R @ Ps).reshape(3, *x1.shape)
-            S_ellip  = (R @ Pb.reshape(3, -1)).reshape(3, *x2.shape)
-            x1s, y1s, z1s = S_sphere[0], S_sphere[1], S_sphere[2]
-            x2s, y2s, z2s = S_ellip[0],  S_ellip[1],  S_ellip[2]
-            # Rotate intersection points
-            Pi = np.stack([xi, yi, zi], axis=0)  # (3, K)
-            Pis = (R @ Pi)
-            xis, yis, zis = Pis[0], Pis[1], Pis[2]
-        else:
-            x1s = y1s = z1s = x2s = y2s = z2s = xis = yis = zis = None
-
-        # Build Plotly figure
-        fig = go.Figure()
-
-        # Body-frame surfaces
-        fig.add_trace(go.Surface(
-            x=x1, y=y1, z=z1, showscale=False, opacity=sphere_opacity,
-            name="|π| = const (sphere, body)"
-        ))
-        fig.add_trace(go.Surface(
-            x=x2, y=y2, z=z2, showscale=False, opacity=ellipsoid_opacity,
-            name="2·KE = const (ellipsoid, body)"
-        ))
-        # Intersection (polhode) in body frame
-        fig.add_trace(go.Scatter3d(
-            x=xi, y=yi, z=zi, mode="markers",
-            marker=dict(size=3),
-            name="intersection (polhode, body)"
-        ))
-
-        # Optional spatial overlay
-        if overlay_spatial and ICR is not None:
-            fig.add_trace(go.Surface(
-                x=x1s, y=y1s, z=z1s, showscale=False, opacity=0.2,
-                name="|π| sphere (spatial)"
-            ))
-            fig.add_trace(go.Surface(
-                x=x2s, y=y2s, z=z2s, showscale=False, opacity=0.2,
-                name="2·KE ellipsoid (spatial)"
-            ))
-            fig.add_trace(go.Scatter3d(
-                x=xis, y=yis, z=zis, mode="markers",
-                marker=dict(size=3),
-                name="intersection (spatial overlay)"
-            ))
-
-        # Axes range (auto) and layout
-        max_extent = float(np.max(np.abs(np.concatenate([
-            x1.ravel(), y1.ravel(), z1.ravel(),
-            x2.ravel(), y2.ravel(), z2.ravel()
-        ]))))
-        pad = 0.1 * max_extent
-        rng = [-max_extent - pad, max_extent + pad]
-
-        fig.update_layout(
-            title=title or "Intersection of angular-momentum sphere and constant-energy ellipsoid (π-space)",
-            scene=dict(
-                xaxis=dict(range=rng, autorange=False),
-                yaxis=dict(range=rng, autorange=False),
-                zaxis=dict(range=rng, autorange=False),
-                aspectmode="data"
-            ),
-            showlegend=True
+        a, o, p, spi, Xc = yk
+    
+        # Reconstruct the physical stage state.
+        R_stage = self.exp_map(a) @ R_base
+        omega_stage = R_stage @ invII @ R_stage.T @ spi
+    
+        X_stage = [[R_stage, o], omega_stage, p, Xc]
+    
+        _, _, doto, dp, dspi, dXc = self.rigid_body_system(
+            parameters, tk, X_stage
         )
+    
+        # B(a, omega): local rotation-coordinate derivative.
+        a_cross_omega = np.cross(a, omega_stage)
+        da = (
+            omega_stage
+            - 0.5 * a_cross_omega
+            + np.cross(a, a_cross_omega) / 12.0
+        )
+    
+        return (
+            da,
+            np.asarray(doto, dtype=float),
+            np.asarray(dp, dtype=float),
+            np.asarray(dspi, dtype=float),
+            np.asarray(dXc, dtype=float),
+        )    
+######################
+    
+    # def runga_kutta_method(self, dt, Tmax, parameters, ICs):
+    #     """
+    #     Integrate a rigid body's pose and momenta with a **Lie-group RK4** stepper.
 
-        if show:
-            fig.show()
+    #     This integrator advances the composite state
+    #         X = [[R, o], omega, p, Xc]
+    #     over t ∈ [0, Tmax] using a fourth-order Runge–Kutta scheme that:
+    #     • updates attitude R ∈ SO(3) via a **left-increment** R ← exp(dt·ω̄) @ R
+    #         (preserves orthonormality by construction),
+    #     • updates translation, linear momentum, and auxiliary/controller state
+    #         with classical RK4 stage averaging.
 
-        info = {
-            "magPi": magPi,
-            "KE": KE,
-            "pi0_body": pi0_body,
-            "pi0_spatial": (ICR @ pi0_body) if (overlay_spatial and ICR is not None) else None,
-            "eigvals": lam,
-            "eigvecs": Q,
-        }
-        return fig, info
+    #     ---------- State & Dynamics ----------
+    #     State layout:
+    #         R     : (3,3) rotation matrix (orthonormal, det=+1)
+    #         o     : (3,)  position
+    #         omega : (3,)  body angular velocity
+    #         p     : (3,)  linear momentum
+    #         Xc    : (...) auxiliary/controller state (any shape)
+
+    #     Required hooks on `self`:
+    #         rigid_body_system(parameters, t, X) -> tuple
+    #             Returns (theta, n, doto, dp, dspi, dXc) at (t, X), where
+    #             • theta = ||omega|| (scalar),
+    #             • n     = omega / ||omega|| (unit axis, zero if tiny),
+    #             • doto  = ȯ (linear velocity),
+    #             • dp    = ṗ (external/actuator forces),
+    #             • dspi  = spatial spin rate (time derivative of spatial angular momentum),
+    #             • dXc   = time derivative of Xc.
+    #             The product w := theta * n is treated as the **body angular rate** used
+    #             to build RK4 stage predictors on SO(3).
+    #         exp_map(v: (3,)) -> (3,3)
+    #             Exponential map on SO(3): exp_map(v) = exp(hat(v)).
+    #         r_from_quaternions / hat_matrix (optional elsewhere): not used here.
+
+    #     Parameters
+    #     ----------
+    #     dt : float
+    #         Fixed time step (seconds).
+    #     Tmax : float
+    #         Total simulated time horizon (seconds). The loop executes N=floor(Tmax/dt) steps.
+    #         Use ceil if you prefer to land exactly on Tmax.
+    #     parameters : dict
+    #         Model parameters; recognized keys:
+    #         • 'II' : (3,3) SPD body inertia matrix (default I3).
+    #         • Any additional keys are forwarded to `rigid_body_system`.
+    #     ICs : list/tuple
+    #         Initial composite state in the same layout as X: [[R0, o0], omega0, p0, Xc0].
+
+    #     Returns
+    #     -------
+    #     Xout : list
+    #         Sequence of states over the grid (length N+1), including the initial state `ICs`.
+    #         Each item has the layout [[R, o], omega, p, Xc].
+
+    #     Algorithm (per step)
+    #     --------------------
+    #     1) Evaluate k1 at (t, X).
+    #     2) Build stage predictor Y1 at t+dt/2 with exp(0.5·dt·w1) and Euler drifts; evaluate k2.
+    #     3) Build stage predictor Y2 at t+dt/2 with exp(0.5·dt·w2); evaluate k3.
+    #     4) Build stage predictor Y3 at t+dt with exp(dt·w3); evaluate k4.
+    #     5) Form RK4 weighted averages:
+    #         w̄   = (w1 + 2w2 + 2w3 + w4)/6,
+    #         d•̄  = (k1 + 2k2 + 2k3 + k4)/6 for each translational/momentum/controller rate.
+    #     6) Update:
+    #         R_new   = exp(dt·w̄) @ R,
+    #         o_new   = o   + dt·dō̄,
+    #         p_new   = p   + dt·dp̄,
+    #         spi_new = R II Rᵀ omega + dt·ds̄,
+    #         omega_new = R_new II⁻¹ R_newᵀ spi_new,
+    #         Xc_new  = Xc + dt·dXc̄.
+
+    #     Numerical Properties & Notes
+    #     ----------------------------
+    #     • SO(3) update is group-consistent and maintains RᵀR=I, det R=+1 up to machine precision.
+    #     • Stage times are (t, t+dt/2, t+dt/2, t+dt); weights (1,2,2,1)/6 (classical RK4).
+    #     • The angular stage vector w_i := theta_i n_i must represent a **body-frame** rate to
+    #     match the left-increment kinematics Ṙ = R·hat(omega_body).
+    #     • A small-angle safeguard is applied implicitly by exp_map; you may add an explicit check
+    #     if your exp_map assumes ||v|| > 0.
+
+    #     Caveats
+    #     -------
+    #     • If your dynamics produce **spatial** quantities, convert them to/from the body frame
+    #     consistently (this routine assumes body w_i and spatial momentum spin dynamics).
+    #     • The loop uses floor(Tmax/dt); consider adjusting if exact endpoint alignment is required.
+
+    #     Example
+    #     -------
+    #     >>> params = {'II': np.diag([0.1, 0.2, 0.3])}
+    #     >>> R0 = np.eye(3); o0 = np.zeros(3); omega0 = np.array([0.1, 0.0, 0.0])
+    #     >>> p0 = np.zeros(3); Xc0 = np.zeros(2)
+    #     >>> traj = sim.runga_kutta_method(0.01, 1.0, params, [[R0, o0], omega0, p0, Xc0])
+    #     >>> R1 = traj[-1][0][0]
+    #     >>> np.allclose(R1.T @ R1, np.eye(3), atol=1e-12)
+    #     True
+    #     """
+    #     II = parameters.get('II', np.eye(3))
+    #     invII = np.linalg.inv(II)
+
+    #     # steps: floor hits t in [0, N*dt); use ceil if you want to land on Tmax exactly
+    #     N = int(np.floor(Tmax / dt + 1e-12))
+    #     t0 = 0.0
+
+    #     X = ICs
+    #     Xout = [X]
+    #     self.state = ICs
+
+    #     for k in range(N):
+    #         t = t0 + k*dt
+    #         R, o, omega, p, Xc = X[0][0], X[0][1], X[1], X[2], X[3]
+
+    #         # k1 at (t, X)
+    #         th1, n1, do1, dp1, ds1, dXc1 = self.rigid_body_system(parameters, t, X)
+
+    #         # k2 from Y1 at t+dt/2
+    #         w1 = th1 * n1
+    #         Y1 = [[ self.exp_map(0.5*dt * w1) @ R, o + 0.5*dt*do1 ],
+    #             omega + 0.5*dt*w1, p + 0.5*dt*dp1, Xc + 0.5*dt*dXc1]
+    #         th2, n2, do2, dp2, ds2, dXc2 = self.rigid_body_system(parameters, t + 0.5*dt, Y1)
+
+    #         # k3 from Y2 at t+dt/2
+    #         w2 = th2 * n2
+    #         Y2 = [[ self.exp_map(0.5*dt * w2) @ R, o + 0.5*dt*do2 ],
+    #             omega + 0.5*dt*w2, p + 0.5*dt*dp2, Xc + 0.5*dt*dXc2]
+    #         th3, n3, do3, dp3, ds3, dXc3 = self.rigid_body_system(parameters, t + 0.5*dt, Y2)
+
+    #         # k4 from Y3 at t+dt
+    #         w3 = th3 * n3
+    #         Y3 = [[ self.exp_map(dt * w3) @ R, o + dt*do3 ],
+    #             omega + dt*w3, p + dt*dp3, Xc + dt*dXc3]
+    #         th4, n4, do4, dp4, ds4, dXc4 = self.rigid_body_system(parameters, t + dt, Y3)
+
+    #         # RK4 weights
+    #         w_bar   = (th1*n1 + 2*th2*n2 + 2*th3*n3 + th4*n4) / 6.0
+    #         do_bar  = (do1     + 2*do2    + 2*do3    + do4   ) / 6.0
+    #         dp_bar  = (dp1     + 2*dp2    + 2*dp3    + dp4   ) / 6.0
+    #         ds_bar  = (ds1     + 2*ds2    + 2*ds3    + ds4   ) / 6.0
+    #         dXc_bar = (dXc1    + 2*dXc2   + 2*dXc3   + dXc4  ) / 6.0
+
+    #         # group-consistent updates
+    #         theta = np.linalg.norm(w_bar)
+    #         if theta > 1e-12:
+    #             R_new = self.exp_map(dt * w_bar) @ R
+    #         else:
+    #             R_new = R
+
+    #         o_new   = o   + dt * do_bar
+    #         p_new   = p   + dt * dp_bar
+    #         spi_new = R @ II @ R.T @ omega + dt * ds_bar
+    #         omega_new = R_new @ invII @ R_new.T @ spi_new
+    #         Xc_new  = Xc + dt * dXc_bar
+
+    #         X = [[R_new, o_new], omega_new, p_new, Xc_new]
+    #         Xout.append(X)
+    #         self.state = X
+
+    #     self.trajectory = Xout
+    #     return Xout
+
+    # def _rk4_function(self, dtk, X_base, tk, Xk, parameters, invII=None):
+    #     """
+    #     One RK substep: advance a state Xk forward by dtk using dynamics at (tk, Xk).
+    #     Returns a new temporary state (R_next, o_next, omega_next, p_next, Xc_next)
+    #     built RELATIVE TO Xk (not X_base).
+    #     """
+    #     II = parameters.get('II', np.eye(3))
+    #     if invII is None:
+    #         invII = np.linalg.inv(II)
+
+    #     # dynamics at the stage point (tk, Xk)
+    #     theta, n, doto, dp, dspi, dXc = self.rigid_body_system(parameters, tk, Xk)
+
+    #     # unpack the STAGE BASE (use Xk as the reference)
+    #     Rk, ok   = Xk[0]
+    #     omegak   = Xk[1]
+    #     pk       = Xk[2]
+    #     Xck      = Xk[3]
+
+    #     # incremental rotation from stage angular vector w = theta*n
+    #     w = theta * n
+    #     R_next = self.exp_map(dtk * w) @ Rk
+
+    #     # advance translational/momentum/controller from STAGE BASE
+    #     o_next   = ok  + dtk * doto
+    #     p_next   = pk  + dtk * dp
+    #     spi_next = Rk @ II @ Rk.T @ omegak + dtk * dspi    # spatial angular momentum
+    #     omega_next = R_next @ invII @ R_next.T @ spi_next  # body rate at new frame
+    #     Xc_next = Xck + dtk * dXc
+
+    #     return [[R_next, o_next], omega_next, p_next, Xc_next]
+
+    # def simulating_a_cube(self, dt, Tmax, cubeDimensions, parameters,ICs):
+    #     XX=self.cube_vertices(cubeDimensions);
+
+    #     #Xs=self.eulers_method(dt,Tmax,parameters,ICs);
+    #     Xs=self.runga_kutta_method(dt,Tmax,parameters,ICs);
+    #     ICR=ICs[0][0];
+    #     XX0=ICR @ XX;
+
+    #     rotatedVertices=[[XX0]]
+    #     for X in Xs:
+    #     #print(X[0])
+    #         R=X[0][0];
+    #         o=X[0][1];
+    #         XXi=self.rotate_and_translate(XX,R,o);
+    #         XX0=XXi;
+    #         rotatedVertices+=[[XX0]];
+    #     return rotatedVertices
+
+    # def plot_momentum_energy_intersection(
+    #     self,
+    #     *,
+    #     parameters: dict,
+    #     ICOmega: np.ndarray,
+    #     ICR: np.ndarray | None = None,
+    #     grid_phi: int = 50,
+    #     grid_theta: int = 100,
+    #     tol: float = 1e-3,
+    #     overlay_spatial: bool = False,
+    #     sphere_opacity: float = 0.35,
+    #     ellipsoid_opacity: float = 0.35,
+    #     title: str | None = None,
+    #     show: bool = True,
+    # ):
+    #     """
+    #     Plot |π| = const sphere and 2*KE = const ellipsoid in π-space and mark their intersection (polhode).
+
+    #     Parameters
+    #     ----------
+    #     parameters : dict
+    #         Must include 'II' (3x3 inertia in *body* frame). Symmetric, SPD expected.
+    #     ICOmega : (3,) array-like
+    #         Initial angular velocity in body frame (ω₀). Used to set |π| and KE via π₀ = I ω₀.
+    #     ICR : (3,3) array-like, optional
+    #         Rotation matrix from body→spatial frame at the instant of interest.
+    #         If provided with overlay_spatial=True, a spatial-frame overlay is drawn (R·π).
+    #     grid_phi : int
+    #         Number of polar samples on the parameter grid (≥ 8 recommended).
+    #     grid_theta : int
+    #         Number of azimuth samples on the parameter grid (≥ 16 recommended).
+    #     tol : float
+    #         Relative tolerance for detecting the intersection curve on the sphere:
+    #         mark points where |πᵀ I^{-1} π − 2KE| ≤ tol * (2KE).
+    #     overlay_spatial : bool
+    #         If True and `ICR` is provided, overlays the rotated surfaces/curve (spatial frame).
+    #     sphere_opacity : float
+    #         Opacity of the |π| sphere surface (0–1).
+    #     ellipsoid_opacity : float
+    #         Opacity of the 2KE ellipsoid surface (0–1).
+    #     title : str, optional
+    #         Figure title. If None, a default informative title is used.
+    #     show : bool
+    #         If True, calls fig.show().
+
+    #     Returns
+    #     -------
+    #     fig : plotly.graph_objects.Figure
+    #         The constructed figure.
+    #     info : dict
+    #         Useful computed scalars: {'magPi', 'KE', 'pi0_body', 'pi0_spatial'(if ICR), 'eigvals', 'eigvecs'}.
+
+    #     Notes
+    #     -----
+    #     - In π-space, the constant-energy surface is an ellipsoid: πᵀ I^{-1} π = 2 KE.
+    #     In the principal-axes basis (I = diag(λ₁,λ₂,λ₃)), semi-axes are √(2 KE λᵢ).
+    #     - The intersection with the |π| sphere is the (body-frame) polhode curve.
+    #     """
+    #     II = np.asarray(parameters["II"], dtype=float)
+    #     if II.shape != (3, 3):
+    #         raise ValueError("parameters['II'] must be a 3x3 matrix")
+    #     if not np.allclose(II, II.T, atol=1e-10):
+    #         raise ValueError("Inertia matrix II must be symmetric")
+    #     # Basic SPD sanity (cholesky)
+    #     LA.cholesky(II)
+
+    #     ICOmega = np.asarray(ICOmega, dtype=float).reshape(3,)
+    #     invII = LA.inv(II)
+
+    #     # π0, |π|, KE
+    #     pi0_body = II @ ICOmega
+    #     magPi = LA.norm(pi0_body)
+    #     KE = 0.5 * ICOmega @ (II @ ICOmega)  # == 0.5 * pi0^T invII pi0
+
+    #     # Parametric grid on sphere (body frame)
+    #     phi = np.linspace(0.0, np.pi, grid_phi)
+    #     theta = np.linspace(0.0, 2.0 * np.pi, grid_theta)
+    #     PHI, THETA = np.meshgrid(phi, theta, indexing="ij")  # (P,T)
+
+    #     # Sphere of radius |π|
+    #     x1 = magPi * np.sin(PHI) * np.cos(THETA)
+    #     y1 = magPi * np.sin(PHI) * np.sin(THETA)
+    #     z1 = magPi * np.cos(PHI)
+
+    #     # Ellipsoid for π^T invII π = 2KE → in principal axes: axes = sqrt(2 KE * λ)
+    #     lam, Q = LA.eigh(II)  # II = Q diag(lam) Q^T, lam>0 ascending
+    #     axes = np.sqrt(2.0 * KE * lam)  # (3,)
+
+    #     # Build ellipsoid in principal frame then rotate to body frame
+    #     xp = axes[0] * np.sin(PHI) * np.cos(THETA)
+    #     yp = axes[1] * np.sin(PHI) * np.sin(THETA)
+    #     zp = axes[2] * np.cos(PHI)
+    #     Pp = np.stack([xp, yp, zp], axis=0).reshape(3, -1)        # (3, N)
+    #     Pb = (Q @ Pp).reshape(3, *xp.shape)                       # (3, P, T)
+    #     x2, y2, z2 = Pb[0], Pb[1], Pb[2]
+
+    #     # Intersection on the sphere: evaluate f(π) = π^T invII π - 2KE
+    #     Ps = np.stack([x1, y1, z1], axis=0).reshape(3, -1)        # sphere points (3,N)
+    #     f = np.einsum("ij,jn,in->n", invII, Ps, Ps).reshape(x1.shape) - (2.0 * KE)
+    #     mask = np.abs(f) <= (tol * 2.0 * KE)
+    #     xi, yi, zi = x1[mask], y1[mask], z1[mask]                 # polhode samples (body frame)
+
+    #     # Optional spatial overlay via ICR (R body→spatial)
+    #     traces = []
+    #     if overlay_spatial and ICR is not None:
+    #         R = np.asarray(ICR, dtype=float).reshape(3, 3)
+    #         # Rotate surfaces
+    #         S_sphere = (R @ Ps).reshape(3, *x1.shape)
+    #         S_ellip  = (R @ Pb.reshape(3, -1)).reshape(3, *x2.shape)
+    #         x1s, y1s, z1s = S_sphere[0], S_sphere[1], S_sphere[2]
+    #         x2s, y2s, z2s = S_ellip[0],  S_ellip[1],  S_ellip[2]
+    #         # Rotate intersection points
+    #         Pi = np.stack([xi, yi, zi], axis=0)  # (3, K)
+    #         Pis = (R @ Pi)
+    #         xis, yis, zis = Pis[0], Pis[1], Pis[2]
+    #     else:
+    #         x1s = y1s = z1s = x2s = y2s = z2s = xis = yis = zis = None
+
+    #     # Build Plotly figure
+    #     fig = go.Figure()
+
+    #     # Body-frame surfaces
+    #     fig.add_trace(go.Surface(
+    #         x=x1, y=y1, z=z1, showscale=False, opacity=sphere_opacity,
+    #         name="|π| = const (sphere, body)"
+    #     ))
+    #     fig.add_trace(go.Surface(
+    #         x=x2, y=y2, z=z2, showscale=False, opacity=ellipsoid_opacity,
+    #         name="2·KE = const (ellipsoid, body)"
+    #     ))
+    #     # Intersection (polhode) in body frame
+    #     fig.add_trace(go.Scatter3d(
+    #         x=xi, y=yi, z=zi, mode="markers",
+    #         marker=dict(size=3),
+    #         name="intersection (polhode, body)"
+    #     ))
+
+    #     # Optional spatial overlay
+    #     if overlay_spatial and ICR is not None:
+    #         fig.add_trace(go.Surface(
+    #             x=x1s, y=y1s, z=z1s, showscale=False, opacity=0.2,
+    #             name="|π| sphere (spatial)"
+    #         ))
+    #         fig.add_trace(go.Surface(
+    #             x=x2s, y=y2s, z=z2s, showscale=False, opacity=0.2,
+    #             name="2·KE ellipsoid (spatial)"
+    #         ))
+    #         fig.add_trace(go.Scatter3d(
+    #             x=xis, y=yis, z=zis, mode="markers",
+    #             marker=dict(size=3),
+    #             name="intersection (spatial overlay)"
+    #         ))
+
+    #     # Axes range (auto) and layout
+    #     max_extent = float(np.max(np.abs(np.concatenate([
+    #         x1.ravel(), y1.ravel(), z1.ravel(),
+    #         x2.ravel(), y2.ravel(), z2.ravel()
+    #     ]))))
+    #     pad = 0.1 * max_extent
+    #     rng = [-max_extent - pad, max_extent + pad]
+
+    #     fig.update_layout(
+    #         title=title or "Intersection of angular-momentum sphere and constant-energy ellipsoid (π-space)",
+    #         scene=dict(
+    #             xaxis=dict(range=rng, autorange=False),
+    #             yaxis=dict(range=rng, autorange=False),
+    #             zaxis=dict(range=rng, autorange=False),
+    #             aspectmode="data"
+    #         ),
+    #         showlegend=True
+    #     )
+
+    #     if show:
+    #         fig.show()
+
+    #     info = {
+    #         "magPi": magPi,
+    #         "KE": KE,
+    #         "pi0_body": pi0_body,
+    #         "pi0_spatial": (ICR @ pi0_body) if (overlay_spatial and ICR is not None) else None,
+    #         "eigvals": lam,
+    #         "eigvecs": Q,
+    #     }
+    #     return fig, info
 
 
     # --- Rigid Body EKF --- OBSOLTE moved to EKF repo
