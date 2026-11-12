@@ -1150,7 +1150,7 @@ class RigidBodySim:
         duration=20,
         stride=1,
         arrow_length=None,
-        body_opacity=0.65,
+        body_opacity=1.0,
         show=True,
     ):
         """
