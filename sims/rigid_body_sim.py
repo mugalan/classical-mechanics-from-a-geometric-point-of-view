@@ -520,23 +520,33 @@ class RigidBodySim:
 
     def set_external_force_model(self, fn: Callable[..., tuple]) -> None:
         """
-        Register the external force/torque model used by the rigid-body integrators.
+        Register the external force and torque model used by the rigid-body integrators.
 
-        The function you provide is called each integration step to produce the **external**
-        generalized inputs: torque (τₑ) and force (fₑ). Both must be 3-vectors.
+        The model is evaluated during integration to return the resultant external
+        torque tau_e and force f_e, both expressed in the spatial (inertial) frame e.
+        The torque must be taken about the same point used to define the integrated
+        angular momentum: the center of mass for free motion, or the fixed pivot
+        for rotation about a fixed point.
 
         Accepted call signatures
         ------------------------
         - fn(parameters, X) -> (tau_e, f_e)
         - fn(self, parameters, X) -> (tau_e, f_e)
 
-        where:
+        Parameters passed to the model
+        ------------------------------
         parameters : dict
-            Simulation parameters (e.g., {'M': mass, 'II': inertia, ...}).
+            Simulation parameters, including mass 'M' and the constant body-frame
+            inertia tensor 'II' about the chosen reference point.
         X : list
-            Current state in the class' format:
+            Current state:
                 X = [[R, o], omega, p, Xc]
-                with R∈ℝ^{3×3}, o∈ℝ³, omega∈ℝ³, p∈ℝ³, Xc=aux/controller state.
+            where:
+                R     : Rotation matrix mapping body to spatial components.
+                o     : Position of the body-frame origin in the spatial frame.
+                omega : Spatial angular velocity.
+                p     : Spatial linear momentum.
+                Xc    : Auxiliary/controller state.
 
         Returns
         -------
@@ -544,22 +554,28 @@ class RigidBodySim:
 
         Requirements
         ------------
-        - tau_e and f_e must be array-like 3-vectors (shape (3,) after `np.asarray`).
-        - Units and frames must be consistent with your dynamics (same frame as used in
-        `rigid_body_system` and the integrators).
+        - The model must return (tau_e, f_e), in that order.
+        - Both outputs must be array-like with shape (3,).
+        - Both outputs must be expressed in the spatial frame, not the body frame.
+          Convert body-frame moments and forces using tau_e = R @ T_e and
+          f_e = R @ F_e.
+        - Use consistent units, typically N*m for torque and N for force.
 
         Notes
         -----
-        If no external model is registered, the integrators fall back to zeros for (τₑ, fₑ).
-        The method supports either a bound method (expects `self`) or a free function.
+        The model may be evaluated multiple times per integration step.
+        These inputs exclude the forces and torques returned by the actuator model.
 
         Examples
         --------
-        >>> def gravity_only(parameters, X):
+        Uniform gravity acting on a body whose origin is at its center of mass,
+        with the spatial third axis pointing upwards:
+
+        >>> def gravity_only(sim, parameters, X):
         ...     M = parameters['M']
-        ...     g = 9.81
-        ...     tau_e = [0.0, 0.0, 0.0]
-        ...     f_e = [0.0, 0.0, -M*g]
+        ...     g = parameters.get('g', 9.81)
+        ...     tau_e = np.zeros(3)
+        ...     f_e = np.array([0.0, 0.0, -M*g])
         ...     return tau_e, f_e
         >>> sim.set_external_force_model(gravity_only)
         """
@@ -569,27 +585,39 @@ class RigidBodySim:
 
     def set_actuator(self, fn: Callable[..., tuple]) -> None:
         """
-        Register the actuator model (control inputs) used by the rigid-body integrators.
+        Register the actuator force and torque model used by the rigid-body integrators.
 
-        The function you provide is called each integration step to produce the **actuated**
-        generalized inputs: torque (τₐ) and force (fₐ). Both must be 3-vectors. The actuator
-        can depend on time, current state, and the external inputs (τₑ, fₑ).
+        The model is evaluated during integration to return the resultant actuator
+        torque tau_a and force f_a, both expressed in the spatial (inertial) frame e.
+        The torque must be taken about the same point used to define the integrated
+        angular momentum: the center of mass for free motion, or the fixed pivot
+        for rotation about a fixed point.
 
         Accepted call signatures
         ------------------------
         - fn(parameters, t, X, tau_e, f_e) -> (tau_a, f_a)
         - fn(self, parameters, t, X, tau_e, f_e) -> (tau_a, f_a)
 
-        where:
+        Parameters passed to the model
+        ------------------------------
         parameters : dict
-            Simulation parameters (e.g., {'M': mass, 'II': inertia, ...}).
+            Simulation parameters, including mass 'M' and the constant body-frame
+            inertia tensor 'II' about the chosen reference point.
         t : float
             Current simulation time.
         X : list
-            Current state in the class' format:
+            Current state:
                 X = [[R, o], omega, p, Xc]
+            where:
+                R     : Rotation matrix mapping body to spatial components.
+                o     : Position of the body-frame origin in the spatial frame.
+                omega : Spatial angular velocity.
+                p     : Spatial linear momentum.
+                Xc    : Auxiliary/controller state.
         tau_e, f_e : array-like
-            External torque/force passed through from the external model.
+            External torque and force supplied by the external model, both
+            expressed in the spatial frame. The torque is about the same
+            reference point as tau_a.
 
         Returns
         -------
@@ -597,25 +625,33 @@ class RigidBodySim:
 
         Requirements
         ------------
-        - tau_a and f_a must be array-like 3-vectors (shape (3,) after `np.asarray`).
-        - Keep frames/units consistent with your dynamics implementation.
+        - The model must return (tau_a, f_a), in that order.
+        - Both outputs must be array-like with shape (3,).
+        - Both outputs must be expressed in the spatial frame, not the body frame.
+          Convert body-frame moments and forces using tau_a = R @ T_a and
+          f_a = R @ F_a.
+        - Use consistent units, typically N*m for torque and N for force.
 
         Notes
         -----
-        If no actuator is registered, the integrators fall back to zeros for (τₐ, fₐ).
-        The method supports either a bound method (expects `self`) or a free function.
+        The model may be evaluated multiple times per integration step.
+        Its outputs are added to the external inputs:
+            total torque = tau_e + tau_a
+            total force  = f_e + f_a
+        Return only the actuator contributions; do not include the external
+        inputs again unless deliberately compensating for them.
 
         Examples
         --------
-        >>> def pd_attitude(parameters, t, X, tau_e, f_e):
-        ...     # toy example: no forces, small stabilizing torque
-        ...     Kp = 0.5; Kd = 0.1
-        ...     R, o = X[0]
-        ...     omega = X[1]
-        ...     tau_a = (-Kd) * omega  # simple damping
-        ...     f_a = [0.0, 0.0, 0.0]
+        Apply rotational damping using the spatial angular velocity:
+
+        >>> def rotational_damping(sim, parameters, t, X, tau_e, f_e):
+        ...     Kd = parameters.get('Kd', 0.1)
+        ...     omega = np.asarray(X[1], dtype=float)
+        ...     tau_a = -Kd * omega
+        ...     f_a = np.zeros(3)
         ...     return tau_a, f_a
-        >>> sim.set_actuator(pd_attitude)
+        >>> sim.set_actuator(rotational_damping)
         """
         if not callable(fn):
             raise TypeError("actuator must be callable")
@@ -623,7 +659,7 @@ class RigidBodySim:
 
     def rigid_body_system(self, parameters, t, X):
         """
-        Models the dynamics of a rigid body system.
+        Models the spatial frame dynamics of a rigid body system.
 
         This method computes the time derivatives and other intermediate quantities
         for a rigid body's state, based on the provided parameters and external forces/torques.
@@ -983,99 +1019,122 @@ class RigidBodySim:
 
         return [X, Y, Z]
 
-    def animated_cube_flat_shading(self, cubeVertices,figTitle):
+    def animated_cube_flat_shading(self, cubeVertices, figTitle):
         """
-        Animate a rigid-body cube (triangulated) with flat shading in Plotly.
-
-        This renders a sequence of cube poses as an animation using a single
-        `Mesh3d` per frame. Each pose is provided as the 8 vertices of the cube
-        after applying your rigid-body transform. The faces are drawn via fixed
-        triangle indices (`i, j, k`) and displayed with flat shading.
-
+        Animate a rigid-body block with a distinct pastel color on each face.
+    
         Parameters
         ----------
         cubeVertices : list
-            A list of frames. **Each element must be a one-item list** whose item
-            is `[X, Y, Z]`, where `X`, `Y`, `Z` are length-8 lists (or arrays) of
-            the cube’s vertex coordinates at that time step:
-
-                cubeVertices = [
-                    [[X0, Y0, Z0]],   # frame 0 → each of X0/Y0/Z0 has 8 numbers
-                    [[X1, Y1, Z1]],   # frame 1
-                    ...
-                ]
-
-            This matches the output structure of `simulating_a_cube(...)`, which
-            builds `rotatedVertices=[[XX0], [XX1], ...]` with `XXk=[Xk, Yk, Zk]`.
-
+            Frames in the format returned by simulating_a_cube:
+                [[[X0, Y0, Z0]], [[X1, Y1, Z1]], ...]
+            Each coordinate array contains eight vertex coordinates.
         figTitle : str
-            Title for the Plotly figure.
-
+            Figure title.
+    
         Returns
         -------
         plotly.graph_objects.Figure
-            The animated Plotly figure. Use `fig.show()` to display (already
-            called inside the method) or further customize the layout/traces.
-
-        Notes
-        -----
-        - The cube faces are defined by the fixed triangle index lists `i, j, k`
-        assuming vertex ordering consistent with `cube_vertices(...)`:
-            indices 0–3 → lower face, 4–7 → upper face.
-        - The scene axis ranges are set to `[-5, 5]` for all axes; adjust as needed.
-        - Animation `frame.duration` is set to 10 (milliseconds).
-        - If you want to use a different vertex container shape (e.g. a direct
-        `(3,8)` array per frame), adapt the indexing where `x=xx[0][0]`, etc.
-
-        Examples
-        --------
-        >>> rb = RigidBodySim()
-        >>> frames = rb.simulating_a_cube(dt, Tmax, cube_dims, params, ICs)
-        >>> fig = rb.animated_cube_flat_shading(frames, "Rigid Body RK4 Demo")
-        >>> # fig is shown and also returned
+            The figure, which is also displayed.
         """
-
-        fig = go.Figure(
-            frames=[go.Frame(data=[
-            go.Mesh3d(
-                # 8 vertices of a cube
-                x=xx[0][0],
-                y=xx[0][1],
-                z=xx[0][2],
-                # i, j and k give the vertices of triangles
-                i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
-                j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
-                k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
-                name='y',
-                opacity=0.6,
-                color='#DC143C',
-                flatshading = True)]) for xx in cubeVertices])
-
-        fig.add_trace(go.Mesh3d(
-                # 8 vertices of a cube
-                x=cubeVertices[0][0][0],
-                y=cubeVertices[0][0][1],
-                z=cubeVertices[0][0][2],
-                # i, j and k give the vertices of triangles
-                i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
-                j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
-                k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
-                name='y',
-                opacity=0.6,
-                color='#DC143C',
-                flatshading = True)
+        # Each consecutive pair of triangles forms one rectangular face.
+        i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
+        j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
+        k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
+    
+        pastel_colors = [
+            "#F2B6C1",  # Rose
+            "#AECDE8",  # Blue
+            "#B8DEC5",  # Mint
+            "#D0BCE3",  # Lavender
+            "#F5D2AC",  # Peach
+            "#EEE3A5",  # Yellow
+        ]
+        triangle_colors = [
+            color for color in pastel_colors for _ in range(2)
+        ]
+    
+        def make_mesh(pose):
+            return go.Mesh3d(
+                x=pose[0][0],
+                y=pose[0][1],
+                z=pose[0][2],
+                i=i,
+                j=j,
+                k=k,
+                facecolor=triangle_colors,
+                flatshading=True,
+                opacity=1.0,
+                lighting=dict(
+                    ambient=0.7,
+                    diffuse=0.7,
+                    specular=0.1,
+                    roughness=0.9,
+                ),
+                name="Rigid body",
+                showscale=False,
             )
-
-        duration=10;
+    
+        fig = go.Figure(
+            data=[make_mesh(cubeVertices[0])],
+            frames=[
+                go.Frame(
+                    data=[make_mesh(pose)],
+                    traces=[0],
+                    name=str(index),
+                )
+                for index, pose in enumerate(cubeVertices)
+            ],
+        )
+    
+        duration = 10
         fig.update_layout(
-            title=figTitle,width=600,height=600,
-            scene=dict(xaxis=dict(range=[-5., 5.], autorange=False),yaxis=dict(range=[-5., 5.], autorange=False),zaxis=dict(range=[-5., 5.], autorange=False),aspectratio=dict(x=1, y=1, z=1),),
-            updatemenus=[dict(type="buttons",
-                                buttons=[dict(label="Play",
-                                                method="animate",
-                                                args=[None, {"frame": {"duration": duration},"mode": "immediate","fromcurrent": True, "transition": {"duration": duration, "easing": "linear"},}]
-                                                )])])
-        len(fig.frames)
+            title=figTitle,
+            width=600,
+            height=600,
+            scene=dict(
+                xaxis=dict(range=[-5.0, 5.0], autorange=False),
+                yaxis=dict(range=[-5.0, 5.0], autorange=False),
+                zaxis=dict(range=[-5.0, 5.0], autorange=False),
+                aspectmode="cube",
+            ),
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    buttons=[
+                        dict(
+                            label="Play",
+                            method="animate",
+                            args=[
+                                None,
+                                {
+                                    "frame": {
+                                        "duration": duration,
+                                        "redraw": True,
+                                    },
+                                    "mode": "immediate",
+                                    "fromcurrent": True,
+                                    "transition": {"duration": 0},
+                                },
+                            ],
+                        ),
+                        dict(
+                            label="Pause",
+                            method="animate",
+                            args=[
+                                [None],
+                                {
+                                    "frame": {"duration": 0, "redraw": False},
+                                    "mode": "immediate",
+                                    "transition": {"duration": 0},
+                                },
+                            ],
+                        ),
+                    ],
+                )
+            ],
+        )
+    
         fig.show()
         return fig
 
