@@ -1043,12 +1043,12 @@ class RigidBodySim:
         k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
     
         pastel_colors = [
-            "#F2B6C1",  # Rose
-            "#AECDE8",  # Blue
-            "#B8DEC5",  # Mint
-            "#D0BCE3",  # Lavender
-            "#F5D2AC",  # Peach
-            "#EEE3A5",  # Yellow
+            "#F06595",  # Pink
+            "#339AF0",  # Blue
+            "#20C997",  # Teal
+            "#845EF7",  # Violet
+            "#FF922B",  # Orange
+            "#FCC419",  # Yellow
         ]
         triangle_colors = [
             color for color in pastel_colors for _ in range(2)
