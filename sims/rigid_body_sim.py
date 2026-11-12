@@ -1149,10 +1149,6 @@ class RigidBodySim:
         states=None,
         duration=20,
         stride=1,
-        show_pi=True,
-        show_Pi=True,
-        show_omega=True,
-        show_Omega=True,
         show_trails=True,
         trail_stride=1,
         arrow_length=None,
@@ -1161,12 +1157,13 @@ class RigidBodySim:
         show=True,
     ):
         """
-        Animate a block with selectable momentum and angular-velocity arrows.
+        Animate a block with angular momentum and angular velocity arrows.
     
-        By default, uses self.trajectory, stored by runga_kutta_method and
-        simulating_a_cube. No additional integration is performed.
+        Click a legend entry to toggle that quantity's arrow, label, and trail
+        together. Visibility selections are retained during playback and reset.
     
-        Each state has the form:
+        Uses self.trajectory unless states is supplied. No new integration
+        is performed. Each state has the format:
             X = [[R, o], omega, p, Xc]
         where omega is SPATIAL angular velocity.
     
@@ -1175,25 +1172,20 @@ class RigidBodySim:
             Pi    = II @ Omega
             pi    = R @ Pi
     
-        Spatial quantities pi and omega are drawn in the physical spatial axes.
-        Body quantities Pi and Omega are drawn as COMPONENT-SPACE OVERLAYS:
-        their component values are plotted along the same plotting axes.
-        They are not additional physical spatial directions:
+        pi and omega are physical spatial representations. Pi and Omega are
+        BODY-COMPONENT OVERLAYS plotted along the same plotting axes; they
+        are not additional physical spatial directions:
             R @ Pi = pi
             R @ Omega = omega
-    
-        All arrows start at the body origin o. Their tip paths optionally
-        accumulate during playback. If o translates, the paths include that
-        translation.
     
         Parameters
         ----------
         cubeDimensions : dict
             Dimensions and origin offsets accepted by cube_vertices.
         parameters : dict
-            Contains 'II', the constant body-frame inertia tensor.
-            The origin must be the center of mass or a fixed pivot, with
-            inertia and angular momentum defined about that point.
+            Contains the constant body-frame inertia tensor 'II'.
+            The body origin must be the center of mass or a fixed pivot,
+            with inertia and angular momentum defined about that point.
         figTitle : str
             Figure title.
         states : sequence, optional
@@ -1202,14 +1194,10 @@ class RigidBodySim:
             Display duration per animation frame, in milliseconds.
         stride : int
             Display every stride-th state, including the final state.
-        show_pi, show_Pi : bool
-            Show spatial and body angular momentum, respectively.
-        show_omega, show_Omega : bool
-            Show spatial and body angular velocity, respectively.
         show_trails : bool
-            Draw accumulated tip paths for the enabled arrows.
+            Include accumulated arrow-tip paths.
         trail_stride : int
-            Retain every trail_stride-th integration sample in the trails.
+            Retain every trail_stride-th integration sample in each trail.
             The current tip is always included.
         arrow_length : float, optional
             Display length assigned to the largest angular-momentum magnitude.
@@ -1218,8 +1206,7 @@ class RigidBodySim:
             Display length assigned to the largest angular-velocity magnitude.
             Defaults to 1.15 times the largest block dimension.
         body_opacity : float
-            Block opacity between zero and one. The default preserves vivid
-            face colors; portions of arrows inside the block are occluded.
+            Block opacity in [0, 1]. The default preserves vivid face colors.
         show : bool
             Whether to display the figure.
     
@@ -1229,29 +1216,28 @@ class RigidBodySim:
     
         Notes
         -----
-        Angular momentum and angular velocity have different units and use
-        separate fixed display scales. Within each spatial/body pair, the
-        same scale is used throughout the animation.
+        Momentum and angular velocity use separate fixed display scales.
+        Each spatial/body pair shares its scale throughout the animation.
+    
+        All arrows start at o. If o translates, their tip paths include that
+        translation. Arrow lengths are display lengths, not physical lengths.
     
         Growing trails increase animation size. Increase stride and/or
         trail_stride for long simulations.
-    
-        The displayed arrows are reconstructed from the supplied state history;
-        this method does not modify the simulation state.
         """
         import numpy as np
         import plotly.graph_objects as go
     
         # ------------------------------------------------------------
-        # Inputs
+        # Validate inputs
         # ------------------------------------------------------------
         if states is None:
             states = getattr(self, "trajectory", None)
     
         if states is None or len(states) == 0:
             raise ValueError(
-                "No state history available. Run simulating_a_cube or "
-                "runga_kutta_method first, or supply states explicitly."
+                "Run simulating_a_cube or runga_kutta_method first, "
+                "or provide states explicitly."
             )
     
         for name, value in (
@@ -1268,20 +1254,16 @@ class RigidBodySim:
             raise ValueError("body_opacity must lie between zero and one.")
     
         II = np.asarray(parameters["II"], dtype=float)
-    
         if II.shape != (3, 3) or not np.all(np.isfinite(II)):
             raise ValueError("parameters['II'] must be a finite 3x3 matrix.")
-    
         if not np.allclose(II, II.T, rtol=1e-10, atol=1e-12):
             raise ValueError("The inertia tensor must be symmetric.")
-    
         if np.any(np.linalg.eigvalsh(II) <= 0):
             raise ValueError("The inertia tensor must be positive definite.")
     
         body_vertices = np.asarray(
             self.cube_vertices(cubeDimensions), dtype=float
         )
-    
         if (
             body_vertices.shape != (3, 8)
             or not np.all(np.isfinite(body_vertices))
@@ -1296,7 +1278,6 @@ class RigidBodySim:
     
         if arrow_length is None:
             arrow_length = 1.5 * block_size
-    
         if angular_velocity_arrow_length is None:
             angular_velocity_arrow_length = 1.15 * block_size
     
@@ -1308,44 +1289,31 @@ class RigidBodySim:
                 raise ValueError(f"{name} must be positive and finite.")
     
         # ------------------------------------------------------------
-        # Reconstruct all four histories
+        # Reconstruct histories
         # ------------------------------------------------------------
-        rotations = []
-        origins = []
-        omega_history = []
-        Omega_history = []
-        pi_history = []
-        Pi_history = []
+        rotations, origins, velocities = [], [], []
     
         for X in states:
             R = np.asarray(X[0][0], dtype=float).reshape(3, 3)
             o = np.asarray(X[0][1], dtype=float).reshape(3)
             omega = np.asarray(X[1], dtype=float).reshape(3)
     
-            if not (
-                np.all(np.isfinite(R))
-                and np.all(np.isfinite(o))
-                and np.all(np.isfinite(omega))
-            ):
+            if not all(np.all(np.isfinite(a)) for a in (R, o, omega)):
                 raise ValueError("The state history contains nonfinite values.")
-    
-            Omega = R.T @ omega
-            Pi = II @ Omega
-            pi = R @ Pi
     
             rotations.append(R)
             origins.append(o)
-            omega_history.append(omega)
-            Omega_history.append(Omega)
-            pi_history.append(pi)
-            Pi_history.append(Pi)
+            velocities.append(omega)
     
         rotations = np.asarray(rotations)
         origins = np.asarray(origins)
-        omega_history = np.asarray(omega_history)
-        Omega_history = np.asarray(Omega_history)
-        pi_history = np.asarray(pi_history)
-        Pi_history = np.asarray(Pi_history)
+        omega_history = np.asarray(velocities)
+    
+        Omega_history = np.einsum(
+            "nji,nj->ni", rotations, omega_history
+        )
+        Pi_history = Omega_history @ II.T
+        pi_history = np.einsum("nij,nj->ni", rotations, Pi_history)
     
         def largest_magnitude(*histories):
             return max(
@@ -1364,64 +1332,42 @@ class RigidBodySim:
             if max_velocity > 0 else 0.0
         )
     
-        # ------------------------------------------------------------
-        # Enabled arrows
-        # ------------------------------------------------------------
         specifications = [
             dict(
-                enabled=show_pi,
-                label="π",
+                key="pi", label="π",
                 name="π — spatial momentum",
-                values=pi_history,
-                scale=momentum_scale,
-                units="kg·m²/s",
-                color="#202020",
-                dash="solid",
+                values=pi_history, scale=momentum_scale,
+                units="kg·m²/s", color="#202020", dash="solid",
             ),
             dict(
-                enabled=show_Pi,
-                label="Π",
+                key="Pi", label="Π",
                 name="Π — body momentum overlay",
-                values=Pi_history,
-                scale=momentum_scale,
-                units="kg·m²/s",
-                color="#C2185B",
-                dash="dash",
+                values=Pi_history, scale=momentum_scale,
+                units="kg·m²/s", color="#C2185B", dash="dash",
             ),
             dict(
-                enabled=show_omega,
-                label="ω",
+                key="omega", label="ω",
                 name="ω — spatial angular velocity",
-                values=omega_history,
-                scale=velocity_scale,
-                units="rad/s",
-                color="#0057B8",
-                dash="solid",
+                values=omega_history, scale=velocity_scale,
+                units="rad/s", color="#0057B8", dash="solid",
             ),
             dict(
-                enabled=show_Omega,
-                label="Ω",
+                key="Omega", label="Ω",
                 name="Ω — body angular velocity overlay",
-                values=Omega_history,
-                scale=velocity_scale,
-                units="rad/s",
-                color="#00875A",
-                dash="dash",
+                values=Omega_history, scale=velocity_scale,
+                units="rad/s", color="#00875A", dash="dash",
             ),
         ]
     
-        enabled = []
         for spec in specifications:
-            if spec["enabled"]:
-                spec["tips"] = origins + spec["scale"] * spec["values"]
-                enabled.append(spec)
+            spec["tips"] = origins + spec["scale"] * spec["values"]
     
         indices = list(range(0, len(states), stride))
         if indices[-1] != len(states) - 1:
             indices.append(len(states) - 1)
     
         # ------------------------------------------------------------
-        # Block geometry and face colors
+        # Block geometry
         # ------------------------------------------------------------
         i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
         j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
@@ -1439,54 +1385,32 @@ class RigidBodySim:
             color for color in face_colors for _ in range(2)
         ]
     
-        def make_mesh(vertices):
-            return go.Mesh3d(
-                x=vertices[0],
-                y=vertices[1],
-                z=vertices[2],
-                i=i,
-                j=j,
-                k=k,
-                facecolor=triangle_colors,
-                flatshading=True,
-                opacity=body_opacity,
-                lighting=dict(
-                    ambient=0.7,
-                    diffuse=0.7,
-                    specular=0.1,
-                    roughness=0.9,
-                ),
-                name="Rigid body",
-                showlegend=False,
-                hoverinfo="skip",
+        def coordinates(points):
+            return dict(x=points[:, 0], y=points[:, 1], z=points[:, 2])
+    
+        def block_coordinates(index):
+            vertices = (
+                origins[index, :, None]
+                + rotations[index] @ body_vertices
             )
+            return dict(x=vertices[0], y=vertices[1], z=vertices[2])
     
         # ------------------------------------------------------------
-        # Arrow, label, and trail
+        # Geometry updates: deliberately omit visibility properties
         # ------------------------------------------------------------
-        def make_arrow(spec, state_index):
-            origin = origins[state_index]
-            value = spec["values"][state_index]
+        def arrow_geometry(spec, index):
+            origin = origins[index]
+            value = spec["values"][index]
             displacement = spec["scale"] * value
-    
             magnitude = float(np.linalg.norm(value))
+    
             tip = origin + displacement
             head_base = origin + 0.82 * displacement
             head = tip - head_base
             head_length = float(np.linalg.norm(head))
     
-            shaft = go.Scatter3d(
-                x=[origin[0], head_base[0]],
-                y=[origin[1], head_base[1]],
-                z=[origin[2], head_base[2]],
-                mode="lines",
-                line=dict(
-                    color=spec["color"],
-                    width=8,
-                    dash=spec["dash"],
-                ),
-                name=spec["name"],
-                legendgroup=spec["label"],
+            shaft = dict(
+                **coordinates(np.vstack([origin, head_base])),
                 hovertemplate=(
                     f"{spec['name']}<br>"
                     f"Components: [{value[0]:.4g}, "
@@ -1496,115 +1420,146 @@ class RigidBodySim:
                 ),
             )
     
-            direction = (
-                head / head_length
-                if head_length > 0
-                else np.array([0.0, 0.0, 1.0])
-            )
-    
-            cone = go.Cone(
-                x=[tip[0]],
-                y=[tip[1]],
-                z=[tip[2]],
-                u=[direction[0]],
-                v=[direction[1]],
-                w=[direction[2]],
-                anchor="tip",
-                sizemode="absolute",
-                sizeref=max(head_length, 1e-12),
-                colorscale=[
-                    [0, spec["color"]],
-                    [1, spec["color"]],
-                ],
-                showscale=False,
-                showlegend=False,
-                legendgroup=spec["label"],
-                visible=head_length > 0,
-                hoverinfo="skip",
-            )
+            if head_length > 0:
+                direction = head / head_length
+                cone = dict(
+                    x=[tip[0]], y=[tip[1]], z=[tip[2]],
+                    u=[direction[0]],
+                    v=[direction[1]],
+                    w=[direction[2]],
+                    sizeref=head_length,
+                )
+            else:
+                # Empty geometry hides a zero-length cone without changing
+                # its legend-controlled visibility.
+                cone = dict(
+                    x=[], y=[], z=[], u=[], v=[], w=[], sizeref=1.0
+                )
     
             text_position = origin + 1.07 * displacement
-            text = go.Scatter3d(
+            label = dict(
                 x=[text_position[0]],
                 y=[text_position[1]],
                 z=[text_position[2]],
-                mode="text",
                 text=[spec["label"] if magnitude > 0 else ""],
-                textfont=dict(
-                    color=spec["color"],
-                    size=18,
-                    family="DejaVu Sans, Arial, sans-serif",
+            )
+    
+            return shaft, cone, label
+    
+        def trail_geometry(spec, index):
+            sample_indices = np.arange(0, index + 1, trail_stride)
+            if sample_indices[-1] != index:
+                sample_indices = np.append(sample_indices, index)
+            return coordinates(spec["tips"][sample_indices])
+    
+        # ------------------------------------------------------------
+        # Initial traces: define styles and legend groups once
+        # ------------------------------------------------------------
+        traces = [
+            go.Mesh3d(
+                **block_coordinates(0),
+                i=i, j=j, k=k,
+                facecolor=triangle_colors,
+                flatshading=True,
+                opacity=body_opacity,
+                lighting=dict(
+                    ambient=0.7, diffuse=0.7,
+                    specular=0.1, roughness=0.9,
                 ),
+                name="Rigid body",
                 showlegend=False,
-                legendgroup=spec["label"],
                 hoverinfo="skip",
             )
+        ]
     
-            return [shaft, cone, text]
+        for spec in specifications:
+            shaft, cone, label = arrow_geometry(spec, 0)
     
-        def make_trail(spec, state_index):
-            sample_indices = np.arange(
-                0, state_index + 1, trail_stride, dtype=int
-            )
-    
-            if sample_indices[-1] != state_index:
-                sample_indices = np.append(sample_indices, state_index)
-    
-            points = spec["tips"][sample_indices]
-    
-            return go.Scatter3d(
-                x=points[:, 0],
-                y=points[:, 1],
-                z=points[:, 2],
-                mode="lines",
-                line=dict(
-                    color=spec["color"],
-                    width=4,
-                    dash=spec["dash"],
+            traces.extend([
+                go.Scatter3d(
+                    **shaft,
+                    mode="lines",
+                    line=dict(
+                        color=spec["color"], width=8, dash=spec["dash"]
+                    ),
+                    name=spec["name"],
+                    legendgroup=spec["key"],
+                    showlegend=True,
                 ),
-                name=f"{spec['label']} tip path",
-                showlegend=False,
-                legendgroup=spec["label"],
-                hoverinfo="skip",
-            )
+                go.Cone(
+                    **cone,
+                    anchor="tip",
+                    sizemode="absolute",
+                    colorscale=[[0, spec["color"]], [1, spec["color"]]],
+                    showscale=False,
+                    showlegend=False,
+                    legendgroup=spec["key"],
+                    hoverinfo="skip",
+                ),
+                go.Scatter3d(
+                    **label,
+                    mode="text",
+                    textfont=dict(
+                        color=spec["color"],
+                        size=18,
+                        family="DejaVu Sans, Arial, sans-serif",
+                    ),
+                    showlegend=False,
+                    legendgroup=spec["key"],
+                    hoverinfo="skip",
+                ),
+            ])
     
-        def frame_traces(state_index):
-            vertices = (
-                origins[state_index, :, None]
-                + rotations[state_index] @ body_vertices
-            )
+            if show_trails:
+                traces.append(go.Scatter3d(
+                    **trail_geometry(spec, 0),
+                    mode="lines",
+                    line=dict(
+                        color=spec["color"], width=4, dash=spec["dash"]
+                    ),
+                    name=f"{spec['label']} tip path",
+                    showlegend=False,
+                    legendgroup=spec["key"],
+                    hoverinfo="skip",
+                ))
     
-            traces = [make_mesh(vertices)]
+        # Geometry-only frames preserve legend visibility selections.
+        def frame_data(index):
+            updates = [go.Mesh3d(**block_coordinates(index))]
     
-            for spec in enabled:
-                traces.extend(make_arrow(spec, state_index))
+            for spec in specifications:
+                shaft, cone, label = arrow_geometry(spec, index)
+                updates.extend([
+                    go.Scatter3d(**shaft),
+                    go.Cone(**cone),
+                    go.Scatter3d(**label),
+                ])
     
                 if show_trails:
-                    traces.append(make_trail(spec, state_index))
+                    updates.append(
+                        go.Scatter3d(**trail_geometry(spec, index))
+                    )
     
-            return traces
-    
-        initial_traces = frame_traces(0)
-        trace_indices = list(range(len(initial_traces)))
+            return updates
     
         fig = go.Figure(
-            data=initial_traces,
+            data=traces,
             frames=[
                 go.Frame(
                     name=str(index),
-                    data=frame_traces(index),
-                    traces=trace_indices,
+                    data=frame_data(index),
+                    traces=list(range(len(traces))),
                 )
                 for index in indices
             ],
         )
     
         # ------------------------------------------------------------
-        # Fixed scene bounds
+        # Fixed scene bounds for every quantity
         # ------------------------------------------------------------
         bounds_points = [origins]
     
-        for spec in enabled:
+        for spec in specifications:
             bounds_points.extend([
                 spec["tips"],
                 origins + 1.12 * spec["scale"] * spec["values"],
@@ -1621,32 +1576,22 @@ class RigidBodySim:
         lower = points.min(axis=0)
         upper = points.max(axis=0)
         center = 0.5 * (lower + upper)
-    
-        half_width = 0.58 * max(
-            float(np.max(upper - lower)), block_size
-        )
+        half_width = 0.58 * max(float(np.max(upper - lower)), block_size)
     
         axis_layout = {
             axis: dict(
                 title=label,
-                range=[
-                    center[j] - half_width,
-                    center[j] + half_width,
-                ],
+                range=[center[j] - half_width, center[j] + half_width],
                 autorange=False,
             )
             for j, (axis, label) in enumerate(zip(
-                ("xaxis", "yaxis", "zaxis"),
-                ("e₁", "e₂", "e₃"),
+                ("xaxis", "yaxis", "zaxis"), ("e₁", "e₂", "e₃")
             ))
         }
     
-        # ------------------------------------------------------------
-        # Animation controls
-        # ------------------------------------------------------------
         fig.update_layout(
             title=figTitle,
-            height=750,
+            height=780,
             scene=dict(
                 **axis_layout,
                 aspectmode="cube",
@@ -1655,67 +1600,51 @@ class RigidBodySim:
             ),
             font=dict(family="DejaVu Sans, Arial, sans-serif"),
             legend=dict(
+                title=dict(text="Click a quantity to show/hide it"),
                 orientation="h",
                 y=-0.04,
                 groupclick="togglegroup",
+                itemclick="toggle",
+                itemdoubleclick=False,
+                uirevision="keep-visibility",
             ),
-            margin=dict(l=10, r=10, t=70, b=150),
-            updatemenus=[
-                dict(
-                    type="buttons",
-                    direction="left",
-                    x=0.0,
-                    y=-0.18,
-                    buttons=[
-                        dict(
-                            label="Play",
-                            method="animate",
-                            args=[
-                                None,
-                                {
-                                    "frame": {
-                                        "duration": duration,
-                                        "redraw": True,
-                                    },
-                                    "transition": {"duration": 0},
-                                    "fromcurrent": True,
-                                    "mode": "immediate",
-                                },
-                            ],
-                        ),
-                        dict(
-                            label="Pause",
-                            method="animate",
-                            args=[
-                                [None],
-                                {
-                                    "frame": {
-                                        "duration": 0,
-                                        "redraw": False,
-                                    },
-                                    "transition": {"duration": 0},
-                                    "mode": "immediate",
-                                },
-                            ],
-                        ),
-                        dict(
-                            label="Reset",
-                            method="animate",
-                            args=[
-                                ["0"],
-                                {
-                                    "frame": {
-                                        "duration": 0,
-                                        "redraw": True,
-                                    },
-                                    "transition": {"duration": 0},
-                                    "mode": "immediate",
-                                },
-                            ],
-                        ),
-                    ],
-                )
-            ],
+            margin=dict(l=10, r=10, t=70, b=170),
+            updatemenus=[dict(
+                type="buttons",
+                direction="left",
+                x=0.0,
+                y=-0.22,
+                buttons=[
+                    dict(
+                        label="Play",
+                        method="animate",
+                        args=[None, {
+                            "frame": {"duration": duration, "redraw": True},
+                            "transition": {"duration": 0},
+                            "fromcurrent": True,
+                            "mode": "immediate",
+                        }],
+                    ),
+                    dict(
+                        label="Pause",
+                        method="animate",
+                        args=[[None], {
+                            "frame": {"duration": 0, "redraw": False},
+                            "transition": {"duration": 0},
+                            "mode": "immediate",
+                        }],
+                    ),
+                    dict(
+                        label="Reset",
+                        method="animate",
+                        args=[["0"], {
+                            "frame": {"duration": 0, "redraw": True},
+                            "transition": {"duration": 0},
+                            "mode": "immediate",
+                        }],
+                    ),
+                ],
+            )],
         )
     
         if show:
