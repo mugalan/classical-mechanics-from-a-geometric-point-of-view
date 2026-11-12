@@ -1145,67 +1145,70 @@ class RigidBodySim:
         states,
         cubeDimensions,
         parameters,
-        figTitle="Rigid-body motion and angular momentum",
+        figTitle="Rigid body and angular momentum",
         *,
         duration=20,
         stride=1,
         arrow_length=None,
+        body_opacity=0.65,
         show=True,
     ):
         """
-        Animate a block and its angular momentum in spatial and body frames.
+        Animate a block with spatial and body momentum arrows in one plot.
     
-        The left panel shows the moving block and spatial angular momentum pi.
-        The right panel shows the stationary body geometry and body angular
-        momentum Pi. These arrows represent the same physical quantity:
+        The state history uses:
+            X = [[R, o], omega, p, Xc]
+        where omega is SPATIAL angular velocity.
+    
+        Angular momenta are calculated as:
             Pi = II @ (R.T @ omega),
             pi = R @ Pi.
+    
+        The spatial momentum pi is drawn in the physical spatial axes.
+        The body momentum Pi is drawn using its component values along the
+        same plotting axes, as a COMPONENT-SPACE OVERLAY. It is not a second
+        physical spatial direction: transforming it physically gives R @ Pi = pi.
+    
+        Both arrows start at o and use the same fixed display scale.
+        For torque-free motion, pi remains constant while Pi generally varies.
     
         Parameters
         ----------
         states : sequence
-            State history returned by runga_kutta_method:
-                X = [[R, o], omega, p, Xc]
-            Here omega is SPATIAL angular velocity.
+            State history returned by runga_kutta_method.
         cubeDimensions : dict
             Dimensions and origin offsets accepted by cube_vertices.
         parameters : dict
-            Contains 'II', the constant body-frame inertia tensor.
-            The body origin must be the center of mass or a fixed pivot,
-            with II taken about that point.
+            Contains the constant body-frame inertia tensor 'II'.
+            The origin must be the center of mass or a fixed pivot, with
+            inertia and angular momentum defined about that point.
         figTitle : str
             Figure title.
         duration : float
-            Display duration of each animation frame, in milliseconds.
-            This does not change the numerical integration time step.
+            Display duration per animation frame, in milliseconds.
         stride : int
-            Display every stride-th state to reduce animation size.
+            Display every stride-th state.
         arrow_length : float, optional
-            Display length assigned to the maximum momentum magnitude.
+            Display length of the largest momentum magnitude.
             Defaults to 1.5 times the largest block dimension.
-            A single fixed scale is used for both arrows throughout the animation.
+        body_opacity : float
+            Block opacity between zero and one.
         show : bool
             Whether to display the figure.
     
         Returns
         -------
         plotly.graph_objects.Figure
-    
-        Notes
-        -----
-        Arrow lengths are scaled for visualization and are not physical lengths.
-        Momentum magnitudes are available by hovering over the arrows.
-    
-        For torque-free motion, spatial angular momentum is constant, whereas
-        its body components generally vary. Plotting R @ Pi in the spatial
-        panel would produce the same arrow as pi, not a second independent arrow.
         """
-
+        import numpy as np
+        import plotly.graph_objects as go
     
         if len(states) == 0:
             raise ValueError("states must contain at least one state.")
         if not isinstance(stride, (int, np.integer)) or stride < 1:
             raise ValueError("stride must be a positive integer.")
+        if not 0 <= body_opacity <= 1:
+            raise ValueError("body_opacity must lie between zero and one.")
     
         II = np.asarray(parameters["II"], dtype=float)
         if II.shape != (3, 3):
@@ -1229,7 +1232,6 @@ class RigidBodySim:
             Pi = II @ (R.T @ omega)
             pi = R @ Pi
             vertices = o[:, None] + R @ body_vertices
-    
             poses.append((vertices, o, pi, Pi))
     
         block_size = float(np.max(np.ptp(body_vertices, axis=1)))
@@ -1242,25 +1244,23 @@ class RigidBodySim:
             raise ValueError("arrow_length must be positive.")
     
         max_momentum = max(np.linalg.norm(pose[2]) for pose in poses)
-        momentum_scale = (
-            arrow_length / max_momentum if max_momentum > 0 else 0.0
-        )
+        scale = arrow_length / max_momentum if max_momentum > 0 else 0.0
     
         i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
         j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
         k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
     
         colors = [
-            "#339AF0",  # −b₂
-            "#F06595",  # −b₃
-            "#845EF7",  # +b₃
-            "#FCC419",  # +b₂
-            "#20C997",  # −b₁
-            "#FF922B",  # +b₁
+            "#339AF0",  # Blue   — wide face (−b₂)
+            "#F06595",  # Pink   — bottom    (−b₃)
+            "#845EF7",  # Violet — top       (+b₃)
+            "#FCC419",  # Yellow — wide face (+b₂)
+            "#20C997",  # Teal   — end       (−b₁)
+            "#FF922B",  # Orange — end       (+b₁)
         ]
         facecolors = [color for color in colors for _ in range(2)]
     
-        def mesh(vertices, scene):
+        def make_mesh(vertices):
             return go.Mesh3d(
                 x=vertices[0],
                 y=vertices[1],
@@ -1268,22 +1268,20 @@ class RigidBodySim:
                 i=i, j=j, k=k,
                 facecolor=facecolors,
                 flatshading=True,
-                # Transparency keeps the arrow visible inside the block.
-                opacity=0.65,
+                opacity=body_opacity,
                 lighting=dict(
                     ambient=0.7,
                     diffuse=0.7,
                     specular=0.1,
                     roughness=0.9,
                 ),
-                name="Block",
-                scene=scene,
+                name="Rigid body",
                 showlegend=False,
                 hoverinfo="skip",
             )
     
-        def arrow(origin, momentum, color, name, scene):
-            displacement = momentum_scale * momentum
+        def make_arrow(origin, momentum, color, name, label, dash):
+            displacement = scale * momentum
             tip = origin + displacement
             head_base = origin + 0.82 * displacement
             head = tip - head_base
@@ -1294,11 +1292,12 @@ class RigidBodySim:
                 y=[origin[1], head_base[1]],
                 z=[origin[2], head_base[2]],
                 mode="lines",
-                line=dict(color=color, width=8),
+                line=dict(color=color, width=8, dash=dash),
                 name=name,
-                scene=scene,
                 hovertemplate=(
                     f"{name}<br>"
+                    f"Components: [{momentum[0]:.4g}, "
+                    f"{momentum[1]:.4g}, {momentum[2]:.4g}]<br>"
                     f"Magnitude: {magnitude:.5g} kg·m²/s"
                     "<extra></extra>"
                 ),
@@ -1314,97 +1313,87 @@ class RigidBodySim:
                 showscale=False,
                 showlegend=False,
                 visible=magnitude > 0,
-                scene=scene,
                 hoverinfo="skip",
             )
     
-            return [shaft, cone]
+            text_position = origin + 1.07 * displacement
+            text = go.Scatter3d(
+                x=[text_position[0]],
+                y=[text_position[1]],
+                z=[text_position[2]],
+                mode="text",
+                text=[label if magnitude > 0 else ""],
+                textfont=dict(color=color, size=18),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+    
+            return [shaft, cone, text]
     
         def frame_traces(pose):
             vertices, o, pi, Pi = pose
             return [
-                mesh(vertices, "scene"),
-                *arrow(o, pi, "#202020", "Spatial momentum π", "scene"),
-                mesh(body_vertices, "scene2"),
-                *arrow(
-                    np.zeros(3), Pi, "#C2185B",
-                    "Body momentum Π", "scene2",
+                make_mesh(vertices),
+                *make_arrow(
+                    o, pi, "#202020",
+                    "π — spatial momentum", "π", "solid",
+                ),
+                *make_arrow(
+                    o, Pi, "#C2185B",
+                    "Π — body-component overlay", "Π", "dash",
                 ),
             ]
     
-        fig = make_subplots(
-            rows=1,
-            cols=2,
-            specs=[[{"type": "scene"}, {"type": "scene"}]],
-            subplot_titles=(
-                "Spatial frame e — π",
-                "Body frame b — Π",
-            ),
-            horizontal_spacing=0.04,
+        fig = go.Figure(
+            data=frame_traces(poses[0]),
+            frames=[
+                go.Frame(
+                    name=str(index),
+                    data=frame_traces(pose),
+                    traces=list(range(7)),
+                )
+                for index, pose in zip(indices, poses)
+            ],
         )
     
-        for trace in frame_traces(poses[0]):
-            fig.add_trace(trace)
-    
-        fig.frames = [
-            go.Frame(
-                name=str(index),
-                data=frame_traces(pose),
-                traces=list(range(6)),
-            )
-            for index, pose in zip(indices, poses)
-        ]
-    
-        # Fixed, equal-scale limits in each panel, covering the entire motion.
-        spatial_points = []
-        body_points = [body_vertices, np.zeros((3, 1))]
-    
+        # Fixed bounds covering the block, both arrows, and their labels.
+        point_sets = []
         for vertices, o, pi, Pi in poses:
-            spatial_points.extend([
+            point_sets.extend([
                 vertices,
                 o[:, None],
-                (o + momentum_scale * pi)[:, None],
+                (o + 1.12 * scale * pi)[:, None],
+                (o + 1.12 * scale * Pi)[:, None],
             ])
-            body_points.append((momentum_scale * Pi)[:, None])
     
-        def scene_layout(point_sets, labels):
-            points = np.concatenate(point_sets, axis=1)
-            lower = points.min(axis=1)
-            upper = points.max(axis=1)
-            center = 0.5 * (lower + upper)
-            half_width = 0.6 * max(float(np.max(upper - lower)), block_size)
+        points = np.concatenate(point_sets, axis=1)
+        lower = points.min(axis=1)
+        upper = points.max(axis=1)
+        center = 0.5 * (lower + upper)
+        half_width = 0.58 * max(float(np.max(upper - lower)), block_size)
     
-            return dict(
-                **{
-                    axis: dict(
-                        title=label,
-                        range=[
-                            center[j] - half_width,
-                            center[j] + half_width,
-                        ],
-                        autorange=False,
-                    )
-                    for j, (axis, label) in enumerate(zip(
-                        ("xaxis", "yaxis", "zaxis"), labels
-                    ))
-                },
-                aspectmode="cube",
-                camera=dict(eye=dict(x=1.6, y=1.6, z=1.1)),
-                uirevision="keep-camera",
+        axes = {
+            axis: dict(
+                title=label,
+                range=[center[j] - half_width, center[j] + half_width],
+                autorange=False,
             )
+            for j, (axis, label) in enumerate(zip(
+                ("xaxis", "yaxis", "zaxis"), ("e₁", "e₂", "e₃")
+            ))
+        }
     
         fig.update_layout(
             title=figTitle,
-            height=600,
-            autosize=True,
-            scene=scene_layout(
-                spatial_points, ("e₁", "e₂", "e₃")
+            height=700,
+            scene=dict(
+                **axes,
+                aspectmode="cube",
+                camera=dict(eye=dict(x=1.6, y=1.6, z=1.1)),
+                uirevision="keep-camera",
             ),
-            scene2=scene_layout(
-                body_points, ("b₁", "b₂", "b₃")
-            ),
-            legend=dict(orientation="h", y=-0.05),
-            margin=dict(l=10, r=10, t=90, b=100),
+            legend=dict(orientation="h", y=-0.04),
+            margin=dict(l=10, r=10, t=70, b=110),
             updatemenus=[dict(
                 type="buttons",
                 direction="left",
