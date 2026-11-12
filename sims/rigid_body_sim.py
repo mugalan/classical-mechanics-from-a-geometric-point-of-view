@@ -1144,45 +1144,54 @@ class RigidBodySim:
         self,
         cubeDimensions,
         parameters,
-        figTitle="Rigid body and angular momentum",
+        figTitle="Rigid-body motion",
         *,
         states=None,
         duration=20,
         stride=1,
+        show_pi=True,
+        show_Pi=True,
+        show_omega=True,
+        show_Omega=True,
+        show_trails=True,
+        trail_stride=1,
         arrow_length=None,
+        angular_velocity_arrow_length=None,
         body_opacity=1.0,
         show=True,
     ):
         """
-        Animate a block with spatial and body momentum arrows and their tip paths.
+        Animate a block with selectable momentum and angular-velocity arrows.
     
-        By default, uses self.trajectory, stored by runga_kutta_method and hence
-        also available after calling simulating_a_cube. No additional integration
-        is performed.
+        By default, uses self.trajectory, stored by runga_kutta_method and
+        simulating_a_cube. No additional integration is performed.
     
         Each state has the form:
             X = [[R, o], omega, p, Xc]
         where omega is SPATIAL angular velocity.
     
-        Angular momenta are calculated as:
-            Pi = II @ (R.T @ omega),
-            pi = R @ Pi.
+        The displayed quantities are:
+            Omega = R.T @ omega
+            Pi    = II @ Omega
+            pi    = R @ Pi
     
-        The spatial momentum pi is drawn in the physical spatial axes.
-        The body momentum Pi is drawn using its component values along the
-        same plotting axes, as a COMPONENT-SPACE OVERLAY. It is not a second
-        physical spatial direction: transforming it physically gives R @ Pi = pi.
+        Spatial quantities pi and omega are drawn in the physical spatial axes.
+        Body quantities Pi and Omega are drawn as COMPONENT-SPACE OVERLAYS:
+        their component values are plotted along the same plotting axes.
+        They are not additional physical spatial directions:
+            R @ Pi = pi
+            R @ Omega = omega
     
-        Both arrows start at o and use the same fixed display scale. Their
-        tip paths accumulate during playback. If o moves, these paths include
-        the translation of the origin.
+        All arrows start at the body origin o. Their tip paths optionally
+        accumulate during playback. If o translates, the paths include that
+        translation.
     
         Parameters
         ----------
         cubeDimensions : dict
             Dimensions and origin offsets accepted by cube_vertices.
         parameters : dict
-            Contains the constant body-frame inertia tensor 'II'.
+            Contains 'II', the constant body-frame inertia tensor.
             The origin must be the center of mass or a fixed pivot, with
             inertia and angular momentum defined about that point.
         figTitle : str
@@ -1191,14 +1200,26 @@ class RigidBodySim:
             State history. Defaults to self.trajectory.
         duration : float
             Display duration per animation frame, in milliseconds.
-            This does not change the numerical integration time step.
         stride : int
-            Display every stride-th state. Trails retain intermediate samples.
+            Display every stride-th state, including the final state.
+        show_pi, show_Pi : bool
+            Show spatial and body angular momentum, respectively.
+        show_omega, show_Omega : bool
+            Show spatial and body angular velocity, respectively.
+        show_trails : bool
+            Draw accumulated tip paths for the enabled arrows.
+        trail_stride : int
+            Retain every trail_stride-th integration sample in the trails.
+            The current tip is always included.
         arrow_length : float, optional
-            Display length assigned to the largest momentum magnitude.
+            Display length assigned to the largest angular-momentum magnitude.
             Defaults to 1.5 times the largest block dimension.
+        angular_velocity_arrow_length : float, optional
+            Display length assigned to the largest angular-velocity magnitude.
+            Defaults to 1.15 times the largest block dimension.
         body_opacity : float
-            Block opacity between zero and one.
+            Block opacity between zero and one. The default preserves vivid
+            face colors; portions of arrows inside the block are occluded.
         show : bool
             Whether to display the figure.
     
@@ -1208,29 +1229,37 @@ class RigidBodySim:
     
         Notes
         -----
-        Arrow lengths are scaled for visualization, not physical lengths.
-        The arrows retain their relative magnitudes throughout the animation.
+        Angular momentum and angular velocity have different units and use
+        separate fixed display scales. Within each spatial/body pair, the
+        same scale is used throughout the animation.
     
-        For torque-free motion, spatial angular momentum remains constant,
-        while body angular momentum generally changes direction.
+        Growing trails increase animation size. Increase stride and/or
+        trail_stride for long simulations.
     
-        Growing trails increase animation size for long simulations.
-        Increase stride to reduce the number of animation frames.
+        The displayed arrows are reconstructed from the supplied state history;
+        this method does not modify the simulation state.
         """
         import numpy as np
         import plotly.graph_objects as go
     
+        # ------------------------------------------------------------
+        # Inputs
+        # ------------------------------------------------------------
         if states is None:
             states = getattr(self, "trajectory", None)
     
         if states is None or len(states) == 0:
             raise ValueError(
                 "No state history available. Run simulating_a_cube or "
-                "runga_kutta_method first, or provide states explicitly."
+                "runga_kutta_method first, or supply states explicitly."
             )
     
-        if not isinstance(stride, (int, np.integer)) or stride < 1:
-            raise ValueError("stride must be a positive integer.")
+        for name, value in (
+            ("stride", stride),
+            ("trail_stride", trail_stride),
+        ):
+            if not isinstance(value, (int, np.integer)) or value < 1:
+                raise ValueError(f"{name} must be a positive integer.")
     
         if not np.isfinite(duration) or duration <= 0:
             raise ValueError("duration must be positive and finite.")
@@ -1253,21 +1282,40 @@ class RigidBodySim:
             self.cube_vertices(cubeDimensions), dtype=float
         )
     
-        block_size = float(np.max(np.ptp(body_vertices, axis=1)))
-        if not np.isfinite(block_size) or block_size <= 0:
-            raise ValueError("The block must have positive finite dimensions.")
+        if (
+            body_vertices.shape != (3, 8)
+            or not np.all(np.isfinite(body_vertices))
+        ):
+            raise ValueError("cube_vertices must return a finite (3, 8) array.")
+    
+        dimensions = np.ptp(body_vertices, axis=1)
+        if np.any(dimensions <= 0):
+            raise ValueError("All block dimensions must be positive.")
+    
+        block_size = float(np.max(dimensions))
     
         if arrow_length is None:
             arrow_length = 1.5 * block_size
     
-        if not np.isfinite(arrow_length) or arrow_length <= 0:
-            raise ValueError("arrow_length must be positive and finite.")
+        if angular_velocity_arrow_length is None:
+            angular_velocity_arrow_length = 1.15 * block_size
     
-        # Compute momentum histories from all integration samples.
+        for name, value in (
+            ("arrow_length", arrow_length),
+            ("angular_velocity_arrow_length", angular_velocity_arrow_length),
+        ):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive and finite.")
+    
+        # ------------------------------------------------------------
+        # Reconstruct all four histories
+        # ------------------------------------------------------------
         rotations = []
         origins = []
-        spatial_momenta = []
-        body_momenta = []
+        omega_history = []
+        Omega_history = []
+        pi_history = []
+        Pi_history = []
     
         for X in states:
             R = np.asarray(X[0][0], dtype=float).reshape(3, 3)
@@ -1281,54 +1329,115 @@ class RigidBodySim:
             ):
                 raise ValueError("The state history contains nonfinite values.")
     
-            Pi = II @ (R.T @ omega)
+            Omega = R.T @ omega
+            Pi = II @ Omega
             pi = R @ Pi
     
             rotations.append(R)
             origins.append(o)
-            spatial_momenta.append(pi)
-            body_momenta.append(Pi)
+            omega_history.append(omega)
+            Omega_history.append(Omega)
+            pi_history.append(pi)
+            Pi_history.append(Pi)
     
         rotations = np.asarray(rotations)
         origins = np.asarray(origins)
-        spatial_momenta = np.asarray(spatial_momenta)
-        body_momenta = np.asarray(body_momenta)
+        omega_history = np.asarray(omega_history)
+        Omega_history = np.asarray(Omega_history)
+        pi_history = np.asarray(pi_history)
+        Pi_history = np.asarray(Pi_history)
     
-        max_momentum = float(max(
-            np.max(np.linalg.norm(spatial_momenta, axis=1)),
-            np.max(np.linalg.norm(body_momenta, axis=1)),
-        ))
+        def largest_magnitude(*histories):
+            return max(
+                float(np.max(np.linalg.norm(history, axis=1)))
+                for history in histories
+            )
     
-        scale = arrow_length / max_momentum if max_momentum > 0 else 0.0
+        max_momentum = largest_magnitude(pi_history, Pi_history)
+        max_velocity = largest_magnitude(omega_history, Omega_history)
     
-        # Displayed arrow-tip histories.
-        pi_tip_path = origins + scale * spatial_momenta
-        Pi_tip_path = origins + scale * body_momenta
+        momentum_scale = (
+            arrow_length / max_momentum if max_momentum > 0 else 0.0
+        )
+        velocity_scale = (
+            angular_velocity_arrow_length / max_velocity
+            if max_velocity > 0 else 0.0
+        )
     
-        # Display every stride-th state, always including the final state.
+        # ------------------------------------------------------------
+        # Enabled arrows
+        # ------------------------------------------------------------
+        specifications = [
+            dict(
+                enabled=show_pi,
+                label="π",
+                name="π — spatial momentum",
+                values=pi_history,
+                scale=momentum_scale,
+                units="kg·m²/s",
+                color="#202020",
+                dash="solid",
+            ),
+            dict(
+                enabled=show_Pi,
+                label="Π",
+                name="Π — body momentum overlay",
+                values=Pi_history,
+                scale=momentum_scale,
+                units="kg·m²/s",
+                color="#C2185B",
+                dash="dash",
+            ),
+            dict(
+                enabled=show_omega,
+                label="ω",
+                name="ω — spatial angular velocity",
+                values=omega_history,
+                scale=velocity_scale,
+                units="rad/s",
+                color="#0057B8",
+                dash="solid",
+            ),
+            dict(
+                enabled=show_Omega,
+                label="Ω",
+                name="Ω — body angular velocity overlay",
+                values=Omega_history,
+                scale=velocity_scale,
+                units="rad/s",
+                color="#00875A",
+                dash="dash",
+            ),
+        ]
+    
+        enabled = []
+        for spec in specifications:
+            if spec["enabled"]:
+                spec["tips"] = origins + spec["scale"] * spec["values"]
+                enabled.append(spec)
+    
         indices = list(range(0, len(states), stride))
         if indices[-1] != len(states) - 1:
             indices.append(len(states) - 1)
     
-        # Two consecutive triangles form each rectangular face.
+        # ------------------------------------------------------------
+        # Block geometry and face colors
+        # ------------------------------------------------------------
         i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
         j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
         k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
     
         face_colors = [
-            "#339AF0",  # Blue   — wide face (−b₂)
-            "#F06595",  # Pink   — bottom    (−b₃)
-            "#845EF7",  # Violet — top       (+b₃)
-            "#FCC419",  # Yellow — wide face (+b₂)
-            "#20C997",  # Teal   — end       (−b₁)
-            "#FF922B",  # Orange — end       (+b₁)
+            "#339AF0",  # Blue   — −b₂
+            "#F06595",  # Pink   — −b₃
+            "#845EF7",  # Violet — +b₃
+            "#FCC419",  # Yellow — +b₂
+            "#20C997",  # Teal   — −b₁
+            "#FF922B",  # Orange — +b₁
         ]
         triangle_colors = [
             color for color in face_colors for _ in range(2)
         ]
-    
-        spatial_color = "#202020"
-        body_color = "#C2185B"
     
         def make_mesh(vertices):
             return go.Mesh3d(
@@ -1352,10 +1461,15 @@ class RigidBodySim:
                 hoverinfo="skip",
             )
     
-        def make_arrow(origin, momentum, color, name, label, dash):
-            displacement = scale * momentum
-            magnitude = float(np.linalg.norm(momentum))
+        # ------------------------------------------------------------
+        # Arrow, label, and trail
+        # ------------------------------------------------------------
+        def make_arrow(spec, state_index):
+            origin = origins[state_index]
+            value = spec["values"][state_index]
+            displacement = spec["scale"] * value
     
+            magnitude = float(np.linalg.norm(value))
             tip = origin + displacement
             head_base = origin + 0.82 * displacement
             head = tip - head_base
@@ -1366,18 +1480,22 @@ class RigidBodySim:
                 y=[origin[1], head_base[1]],
                 z=[origin[2], head_base[2]],
                 mode="lines",
-                line=dict(color=color, width=8, dash=dash),
-                name=name,
+                line=dict(
+                    color=spec["color"],
+                    width=8,
+                    dash=spec["dash"],
+                ),
+                name=spec["name"],
+                legendgroup=spec["label"],
                 hovertemplate=(
-                    f"{name}<br>"
-                    f"Components: [{momentum[0]:.4g}, "
-                    f"{momentum[1]:.4g}, {momentum[2]:.4g}]<br>"
-                    f"Magnitude: {magnitude:.5g} kg·m²/s"
+                    f"{spec['name']}<br>"
+                    f"Components: [{value[0]:.4g}, "
+                    f"{value[1]:.4g}, {value[2]:.4g}]<br>"
+                    f"Magnitude: {magnitude:.5g} {spec['units']}"
                     "<extra></extra>"
                 ),
             )
     
-            # Use a unit direction; sizeref sets the displayed cone size.
             direction = (
                 head / head_length
                 if head_length > 0
@@ -1394,9 +1512,13 @@ class RigidBodySim:
                 anchor="tip",
                 sizemode="absolute",
                 sizeref=max(head_length, 1e-12),
-                colorscale=[[0, color], [1, color]],
+                colorscale=[
+                    [0, spec["color"]],
+                    [1, spec["color"]],
+                ],
                 showscale=False,
                 showlegend=False,
+                legendgroup=spec["label"],
                 visible=head_length > 0,
                 hoverinfo="skip",
             )
@@ -1407,80 +1529,86 @@ class RigidBodySim:
                 y=[text_position[1]],
                 z=[text_position[2]],
                 mode="text",
-                text=[label if magnitude > 0 else ""],
-                textfont=dict(color=color, size=18),
+                text=[spec["label"] if magnitude > 0 else ""],
+                textfont=dict(
+                    color=spec["color"],
+                    size=18,
+                    family="DejaVu Sans, Arial, sans-serif",
+                ),
                 showlegend=False,
+                legendgroup=spec["label"],
                 hoverinfo="skip",
             )
     
             return [shaft, cone, text]
     
-        def make_trail(path, state_index, color, name, dash):
-            points = path[:state_index + 1]
+        def make_trail(spec, state_index):
+            sample_indices = np.arange(
+                0, state_index + 1, trail_stride, dtype=int
+            )
+    
+            if sample_indices[-1] != state_index:
+                sample_indices = np.append(sample_indices, state_index)
+    
+            points = spec["tips"][sample_indices]
     
             return go.Scatter3d(
                 x=points[:, 0],
                 y=points[:, 1],
                 z=points[:, 2],
                 mode="lines",
-                line=dict(color=color, width=4, dash=dash),
-                name=name,
+                line=dict(
+                    color=spec["color"],
+                    width=4,
+                    dash=spec["dash"],
+                ),
+                name=f"{spec['label']} tip path",
                 showlegend=False,
+                legendgroup=spec["label"],
                 hoverinfo="skip",
             )
     
         def frame_traces(state_index):
-            R = rotations[state_index]
-            o = origins[state_index]
-            pi = spatial_momenta[state_index]
-            Pi = body_momenta[state_index]
+            vertices = (
+                origins[state_index, :, None]
+                + rotations[state_index] @ body_vertices
+            )
     
-            vertices = o[:, None] + R @ body_vertices
+            traces = [make_mesh(vertices)]
     
-            return [
-                make_mesh(vertices),
+            for spec in enabled:
+                traces.extend(make_arrow(spec, state_index))
     
-                *make_arrow(
-                    o, pi, spatial_color,
-                    "π — spatial momentum", "π", "solid",
-                ),
+                if show_trails:
+                    traces.append(make_trail(spec, state_index))
     
-                *make_arrow(
-                    o, Pi, body_color,
-                    "Π — body-component overlay", "Π", "dash",
-                ),
+            return traces
     
-                make_trail(
-                    pi_tip_path, state_index, spatial_color,
-                    "Spatial momentum tip path", "solid",
-                ),
-    
-                make_trail(
-                    Pi_tip_path, state_index, body_color,
-                    "Body momentum tip path", "dash",
-                ),
-            ]
+        initial_traces = frame_traces(0)
+        trace_indices = list(range(len(initial_traces)))
     
         fig = go.Figure(
-            data=frame_traces(0),
+            data=initial_traces,
             frames=[
                 go.Frame(
                     name=str(index),
                     data=frame_traces(index),
-                    traces=list(range(9)),
+                    traces=trace_indices,
                 )
                 for index in indices
             ],
         )
     
-        # Fixed bounds include all trails, labels, and displayed block poses.
-        bounds_points = [
-            origins,
-            pi_tip_path,
-            Pi_tip_path,
-            origins + 1.12 * scale * spatial_momenta,
-            origins + 1.12 * scale * body_momenta,
-        ]
+        # ------------------------------------------------------------
+        # Fixed scene bounds
+        # ------------------------------------------------------------
+        bounds_points = [origins]
+    
+        for spec in enabled:
+            bounds_points.extend([
+                spec["tips"],
+                origins + 1.12 * spec["scale"] * spec["values"],
+            ])
     
         for index in indices:
             vertices = (
@@ -1513,23 +1641,31 @@ class RigidBodySim:
             ))
         }
     
+        # ------------------------------------------------------------
+        # Animation controls
+        # ------------------------------------------------------------
         fig.update_layout(
             title=figTitle,
-            height=700,
+            height=750,
             scene=dict(
                 **axis_layout,
                 aspectmode="cube",
                 camera=dict(eye=dict(x=1.6, y=1.6, z=1.1)),
                 uirevision="keep-camera",
             ),
-            legend=dict(orientation="h", y=-0.04),
-            margin=dict(l=10, r=10, t=70, b=110),
+            font=dict(family="DejaVu Sans, Arial, sans-serif"),
+            legend=dict(
+                orientation="h",
+                y=-0.04,
+                groupclick="togglegroup",
+            ),
+            margin=dict(l=10, r=10, t=70, b=150),
             updatemenus=[
                 dict(
                     type="buttons",
                     direction="left",
                     x=0.0,
-                    y=-0.12,
+                    y=-0.18,
                     buttons=[
                         dict(
                             label="Play",
