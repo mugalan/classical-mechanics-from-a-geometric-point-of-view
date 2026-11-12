@@ -1142,11 +1142,11 @@ class RigidBodySim:
 
     def animated_cube_with_momentum(
         self,
-        states,
         cubeDimensions,
         parameters,
         figTitle="Rigid body and angular momentum",
         *,
+        states=None,
         duration=20,
         stride=1,
         arrow_length=None,
@@ -1154,9 +1154,13 @@ class RigidBodySim:
         show=True,
     ):
         """
-        Animate a block with spatial and body momentum arrows in one plot.
+        Animate a block with spatial and body momentum arrows and their tip paths.
     
-        The state history uses:
+        By default, uses self.trajectory, stored by runga_kutta_method and hence
+        also available after calling simulating_a_cube. No additional integration
+        is performed.
+    
+        Each state has the form:
             X = [[R, o], omega, p, Xc]
         where omega is SPATIAL angular velocity.
     
@@ -1169,13 +1173,12 @@ class RigidBodySim:
         same plotting axes, as a COMPONENT-SPACE OVERLAY. It is not a second
         physical spatial direction: transforming it physically gives R @ Pi = pi.
     
-        Both arrows start at o and use the same fixed display scale.
-        For torque-free motion, pi remains constant while Pi generally varies.
+        Both arrows start at o and use the same fixed display scale. Their
+        tip paths accumulate during playback. If o moves, these paths include
+        the translation of the origin.
     
         Parameters
         ----------
-        states : sequence
-            State history returned by runga_kutta_method.
         cubeDimensions : dict
             Dimensions and origin offsets accepted by cube_vertices.
         parameters : dict
@@ -1184,12 +1187,15 @@ class RigidBodySim:
             inertia and angular momentum defined about that point.
         figTitle : str
             Figure title.
+        states : sequence, optional
+            State history. Defaults to self.trajectory.
         duration : float
             Display duration per animation frame, in milliseconds.
+            This does not change the numerical integration time step.
         stride : int
-            Display every stride-th state.
+            Display every stride-th state. Trails retain intermediate samples.
         arrow_length : float, optional
-            Display length of the largest momentum magnitude.
+            Display length assigned to the largest momentum magnitude.
             Defaults to 1.5 times the largest block dimension.
         body_opacity : float
             Block opacity between zero and one.
@@ -1199,58 +1205,117 @@ class RigidBodySim:
         Returns
         -------
         plotly.graph_objects.Figure
+    
+        Notes
+        -----
+        Arrow lengths are scaled for visualization, not physical lengths.
+        The arrows retain their relative magnitudes throughout the animation.
+    
+        For torque-free motion, spatial angular momentum remains constant,
+        while body angular momentum generally changes direction.
+    
+        Growing trails increase animation size for long simulations.
+        Increase stride to reduce the number of animation frames.
         """
         import numpy as np
         import plotly.graph_objects as go
     
-        if len(states) == 0:
-            raise ValueError("states must contain at least one state.")
+        if states is None:
+            states = getattr(self, "trajectory", None)
+    
+        if states is None or len(states) == 0:
+            raise ValueError(
+                "No state history available. Run simulating_a_cube or "
+                "runga_kutta_method first, or provide states explicitly."
+            )
+    
         if not isinstance(stride, (int, np.integer)) or stride < 1:
             raise ValueError("stride must be a positive integer.")
-        if not 0 <= body_opacity <= 1:
+    
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError("duration must be positive and finite.")
+    
+        if not np.isfinite(body_opacity) or not 0 <= body_opacity <= 1:
             raise ValueError("body_opacity must lie between zero and one.")
     
         II = np.asarray(parameters["II"], dtype=float)
-        if II.shape != (3, 3):
-            raise ValueError("parameters['II'] must have shape (3, 3).")
+    
+        if II.shape != (3, 3) or not np.all(np.isfinite(II)):
+            raise ValueError("parameters['II'] must be a finite 3x3 matrix.")
+    
+        if not np.allclose(II, II.T, rtol=1e-10, atol=1e-12):
+            raise ValueError("The inertia tensor must be symmetric.")
+    
+        if np.any(np.linalg.eigvalsh(II) <= 0):
+            raise ValueError("The inertia tensor must be positive definite.")
     
         body_vertices = np.asarray(
             self.cube_vertices(cubeDimensions), dtype=float
         )
     
+        block_size = float(np.max(np.ptp(body_vertices, axis=1)))
+        if not np.isfinite(block_size) or block_size <= 0:
+            raise ValueError("The block must have positive finite dimensions.")
+    
+        if arrow_length is None:
+            arrow_length = 1.5 * block_size
+    
+        if not np.isfinite(arrow_length) or arrow_length <= 0:
+            raise ValueError("arrow_length must be positive and finite.")
+    
+        # Compute momentum histories from all integration samples.
+        rotations = []
+        origins = []
+        spatial_momenta = []
+        body_momenta = []
+    
+        for X in states:
+            R = np.asarray(X[0][0], dtype=float).reshape(3, 3)
+            o = np.asarray(X[0][1], dtype=float).reshape(3)
+            omega = np.asarray(X[1], dtype=float).reshape(3)
+    
+            if not (
+                np.all(np.isfinite(R))
+                and np.all(np.isfinite(o))
+                and np.all(np.isfinite(omega))
+            ):
+                raise ValueError("The state history contains nonfinite values.")
+    
+            Pi = II @ (R.T @ omega)
+            pi = R @ Pi
+    
+            rotations.append(R)
+            origins.append(o)
+            spatial_momenta.append(pi)
+            body_momenta.append(Pi)
+    
+        rotations = np.asarray(rotations)
+        origins = np.asarray(origins)
+        spatial_momenta = np.asarray(spatial_momenta)
+        body_momenta = np.asarray(body_momenta)
+    
+        max_momentum = float(max(
+            np.max(np.linalg.norm(spatial_momenta, axis=1)),
+            np.max(np.linalg.norm(body_momenta, axis=1)),
+        ))
+    
+        scale = arrow_length / max_momentum if max_momentum > 0 else 0.0
+    
+        # Displayed arrow-tip histories.
+        pi_tip_path = origins + scale * spatial_momenta
+        Pi_tip_path = origins + scale * body_momenta
+    
+        # Display every stride-th state, always including the final state.
         indices = list(range(0, len(states), stride))
         if indices[-1] != len(states) - 1:
             indices.append(len(states) - 1)
     
-        poses = []
-        for index in indices:
-            X = states[index]
-            R = np.asarray(X[0][0], dtype=float)
-            o = np.asarray(X[0][1], dtype=float).reshape(3)
-            omega = np.asarray(X[1], dtype=float).reshape(3)
-    
-            Pi = II @ (R.T @ omega)
-            pi = R @ Pi
-            vertices = o[:, None] + R @ body_vertices
-            poses.append((vertices, o, pi, Pi))
-    
-        block_size = float(np.max(np.ptp(body_vertices, axis=1)))
-        if block_size <= 0:
-            raise ValueError("The block must have positive dimensions.")
-    
-        if arrow_length is None:
-            arrow_length = 1.5 * block_size
-        if arrow_length <= 0:
-            raise ValueError("arrow_length must be positive.")
-    
-        max_momentum = max(np.linalg.norm(pose[2]) for pose in poses)
-        scale = arrow_length / max_momentum if max_momentum > 0 else 0.0
-    
+        # Two consecutive triangles form each rectangular face.
         i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
         j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
         k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
     
-        colors = [
+        face_colors = [
             "#339AF0",  # Blue   — wide face (−b₂)
             "#F06595",  # Pink   — bottom    (−b₃)
             "#845EF7",  # Violet — top       (+b₃)
@@ -1258,15 +1323,22 @@ class RigidBodySim:
             "#20C997",  # Teal   — end       (−b₁)
             "#FF922B",  # Orange — end       (+b₁)
         ]
-        facecolors = [color for color in colors for _ in range(2)]
+        triangle_colors = [
+            color for color in face_colors for _ in range(2)
+        ]
+    
+        spatial_color = "#202020"
+        body_color = "#C2185B"
     
         def make_mesh(vertices):
             return go.Mesh3d(
                 x=vertices[0],
                 y=vertices[1],
                 z=vertices[2],
-                i=i, j=j, k=k,
-                facecolor=facecolors,
+                i=i,
+                j=j,
+                k=k,
+                facecolor=triangle_colors,
                 flatshading=True,
                 opacity=body_opacity,
                 lighting=dict(
@@ -1282,10 +1354,12 @@ class RigidBodySim:
     
         def make_arrow(origin, momentum, color, name, label, dash):
             displacement = scale * momentum
+            magnitude = float(np.linalg.norm(momentum))
+    
             tip = origin + displacement
             head_base = origin + 0.82 * displacement
             head = tip - head_base
-            magnitude = float(np.linalg.norm(momentum))
+            head_length = float(np.linalg.norm(head))
     
             shaft = go.Scatter3d(
                 x=[origin[0], head_base[0]],
@@ -1303,16 +1377,27 @@ class RigidBodySim:
                 ),
             )
     
+            # Use a unit direction; sizeref sets the displayed cone size.
+            direction = (
+                head / head_length
+                if head_length > 0
+                else np.array([0.0, 0.0, 1.0])
+            )
+    
             cone = go.Cone(
-                x=[tip[0]], y=[tip[1]], z=[tip[2]],
-                u=[head[0]], v=[head[1]], w=[head[2]],
+                x=[tip[0]],
+                y=[tip[1]],
+                z=[tip[2]],
+                u=[direction[0]],
+                v=[direction[1]],
+                w=[direction[2]],
                 anchor="tip",
                 sizemode="absolute",
-                sizeref=max(float(np.linalg.norm(head)), 1e-12),
+                sizeref=max(head_length, 1e-12),
                 colorscale=[[0, color], [1, color]],
                 showscale=False,
                 showlegend=False,
-                visible=magnitude > 0,
+                visible=head_length > 0,
                 hoverinfo="skip",
             )
     
@@ -1330,56 +1415,101 @@ class RigidBodySim:
     
             return [shaft, cone, text]
     
-        def frame_traces(pose):
-            vertices, o, pi, Pi = pose
+        def make_trail(path, state_index, color, name, dash):
+            points = path[:state_index + 1]
+    
+            return go.Scatter3d(
+                x=points[:, 0],
+                y=points[:, 1],
+                z=points[:, 2],
+                mode="lines",
+                line=dict(color=color, width=4, dash=dash),
+                name=name,
+                showlegend=False,
+                hoverinfo="skip",
+            )
+    
+        def frame_traces(state_index):
+            R = rotations[state_index]
+            o = origins[state_index]
+            pi = spatial_momenta[state_index]
+            Pi = body_momenta[state_index]
+    
+            vertices = o[:, None] + R @ body_vertices
+    
             return [
                 make_mesh(vertices),
+    
                 *make_arrow(
-                    o, pi, "#202020",
+                    o, pi, spatial_color,
                     "π — spatial momentum", "π", "solid",
                 ),
+    
                 *make_arrow(
-                    o, Pi, "#C2185B",
+                    o, Pi, body_color,
                     "Π — body-component overlay", "Π", "dash",
+                ),
+    
+                make_trail(
+                    pi_tip_path, state_index, spatial_color,
+                    "Spatial momentum tip path", "solid",
+                ),
+    
+                make_trail(
+                    Pi_tip_path, state_index, body_color,
+                    "Body momentum tip path", "dash",
                 ),
             ]
     
         fig = go.Figure(
-            data=frame_traces(poses[0]),
+            data=frame_traces(0),
             frames=[
                 go.Frame(
                     name=str(index),
-                    data=frame_traces(pose),
-                    traces=list(range(7)),
+                    data=frame_traces(index),
+                    traces=list(range(9)),
                 )
-                for index, pose in zip(indices, poses)
+                for index in indices
             ],
         )
     
-        # Fixed bounds covering the block, both arrows, and their labels.
-        point_sets = []
-        for vertices, o, pi, Pi in poses:
-            point_sets.extend([
-                vertices,
-                o[:, None],
-                (o + 1.12 * scale * pi)[:, None],
-                (o + 1.12 * scale * Pi)[:, None],
-            ])
+        # Fixed bounds include all trails, labels, and displayed block poses.
+        bounds_points = [
+            origins,
+            pi_tip_path,
+            Pi_tip_path,
+            origins + 1.12 * scale * spatial_momenta,
+            origins + 1.12 * scale * body_momenta,
+        ]
     
-        points = np.concatenate(point_sets, axis=1)
-        lower = points.min(axis=1)
-        upper = points.max(axis=1)
+        for index in indices:
+            vertices = (
+                origins[index, :, None]
+                + rotations[index] @ body_vertices
+            )
+            bounds_points.append(vertices.T)
+    
+        points = np.concatenate(bounds_points, axis=0)
+        lower = points.min(axis=0)
+        upper = points.max(axis=0)
         center = 0.5 * (lower + upper)
-        half_width = 0.58 * max(float(np.max(upper - lower)), block_size)
     
-        axes = {
+        half_width = 0.58 * max(
+            float(np.max(upper - lower)), block_size
+        )
+    
+        axis_layout = {
             axis: dict(
                 title=label,
-                range=[center[j] - half_width, center[j] + half_width],
+                range=[
+                    center[j] - half_width,
+                    center[j] + half_width,
+                ],
                 autorange=False,
             )
             for j, (axis, label) in enumerate(zip(
-                ("xaxis", "yaxis", "zaxis"), ("e₁", "e₂", "e₃")
+                ("xaxis", "yaxis", "zaxis"),
+                ("e₁", "e₂", "e₃"),
             ))
         }
     
@@ -1387,43 +1517,69 @@ class RigidBodySim:
             title=figTitle,
             height=700,
             scene=dict(
-                **axes,
+                **axis_layout,
                 aspectmode="cube",
                 camera=dict(eye=dict(x=1.6, y=1.6, z=1.1)),
                 uirevision="keep-camera",
             ),
             legend=dict(orientation="h", y=-0.04),
             margin=dict(l=10, r=10, t=70, b=110),
-            updatemenus=[dict(
-                type="buttons",
-                direction="left",
-                x=0.0,
-                y=-0.12,
-                buttons=[
-                    dict(
-                        label="Play",
-                        method="animate",
-                        args=[None, {
-                            "frame": {
-                                "duration": duration,
-                                "redraw": True,
-                            },
-                            "transition": {"duration": 0},
-                            "fromcurrent": True,
-                            "mode": "immediate",
-                        }],
-                    ),
-                    dict(
-                        label="Pause",
-                        method="animate",
-                        args=[[None], {
-                            "frame": {"duration": 0, "redraw": False},
-                            "transition": {"duration": 0},
-                            "mode": "immediate",
-                        }],
-                    ),
-                ],
-            )],
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="left",
+                    x=0.0,
+                    y=-0.12,
+                    buttons=[
+                        dict(
+                            label="Play",
+                            method="animate",
+                            args=[
+                                None,
+                                {
+                                    "frame": {
+                                        "duration": duration,
+                                        "redraw": True,
+                                    },
+                                    "transition": {"duration": 0},
+                                    "fromcurrent": True,
+                                    "mode": "immediate",
+                                },
+                            ],
+                        ),
+                        dict(
+                            label="Pause",
+                            method="animate",
+                            args=[
+                                [None],
+                                {
+                                    "frame": {
+                                        "duration": 0,
+                                        "redraw": False,
+                                    },
+                                    "transition": {"duration": 0},
+                                    "mode": "immediate",
+                                },
+                            ],
+                        ),
+                        dict(
+                            label="Reset",
+                            method="animate",
+                            args=[
+                                ["0"],
+                                {
+                                    "frame": {
+                                        "duration": 0,
+                                        "redraw": True,
+                                    },
+                                    "transition": {"duration": 0},
+                                    "mode": "immediate",
+                                },
+                            ],
+                        ),
+                    ],
+                )
+            ],
         )
     
         if show:
