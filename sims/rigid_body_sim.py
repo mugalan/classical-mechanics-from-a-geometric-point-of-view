@@ -1140,639 +1140,639 @@ class RigidBodySim:
         return fig
 
 
-def animated_cube_with_momentum(
-    self,
-    cubeDimensions,
-    parameters,
-    figTitle="Rigid-body motion",
-    *,
-    states=None,
-    duration=20,
-    stride=2,
-    show_trails=True,
-    trail_stride=20,
-    arrow_length=None,
-    angular_velocity_arrow_length=None,
-    body_opacity=1.0,
-    show_body_frame=True,
-    width=1100,
-    height=650,
-    show=True,
-):
-    """
-    Animate rigid-body motion in synchronized spatial and body views.
-
-    Left panel:
-        The block moves in the spatial frame e.
-        Spatial angular momentum pi and angular velocity omega are shown.
-        Thin body-frame axes are attached to the moving block.
-
-    Right panel:
-        The block remains fixed in body coordinates.
-        Body angular momentum Pi and angular velocity Omega are shown.
-
-    Click each legend entry to toggle its arrow, label, and trail together.
-    Animation updates preserve these visibility choices.
-
-    Uses self.trajectory unless states is supplied. No integration is
-    performed. Each state must have the form:
-        X = [[R, o], omega, p, Xc]
-    where omega is SPATIAL angular velocity.
-
-    The quantities are reconstructed as:
-        Omega = R.T @ omega
-        Pi    = II @ Omega
-        pi    = R @ Pi
-
-    Parameters
-    ----------
-    cubeDimensions : dict
-        Dimensions and origin offsets accepted by cube_vertices.
-    parameters : dict
-        Contains 'II', the constant body-frame inertia tensor.
-        The body origin must be the center of mass or a fixed pivot,
-        with inertia and angular momentum taken about that point.
-    figTitle : str
-        Figure title.
-    states : sequence, optional
-        State history. Defaults to self.trajectory.
-    duration : float
-        Display duration per animation frame, in milliseconds.
-    stride : int
-        Display every stride-th state, including the final state.
-    show_trails : bool
-        Include accumulated arrow-tip paths.
-    trail_stride : int
-        Retain every trail_stride-th sample in each path.
-        The current tip is always included.
-    arrow_length : float, optional
-        Display length assigned to the largest angular-momentum magnitude.
-        Defaults to 1.5 times the largest block dimension.
-    angular_velocity_arrow_length : float, optional
-        Display length assigned to the largest angular-velocity magnitude.
-        Defaults to 1.15 times the largest block dimension.
-    body_opacity : float
-        Block opacity in [0, 1].
-    show_body_frame : bool
-        Draw thin body-frame axes in both panels.
-    width, height : int
-        Figure dimensions in pixels.
-    show : bool
-        Whether to display the figure.
-
-    Returns
-    -------
-    plotly.graph_objects.Figure
-
-    Notes
-    -----
-    Momentum and angular velocity use separate fixed display scales.
-    Each spatial/body pair shares its scale throughout the animation.
-
-    Spatial arrows start at o; body arrows start at the body origin.
-    Spatial tip paths include any translation of o.
-
-    Both panels use the same coordinate scale initially. Their cameras
-    can be manipulated independently.
-
-    Legend text and symbols have fixed pixel sizes. They do not scale
-    with the 3D cameras. Browser zoom still scales the entire page.
-
-    Growing trails increase animation size. Increase stride and/or
-    trail_stride for long simulations.
-    """
-    import numpy as np
-    import plotly.graph_objects as go
-
-    # ------------------------------------------------------------
-    # Validate inputs
-    # ------------------------------------------------------------
-    if states is None:
-        states = getattr(self, "trajectory", None)
-
-    if states is None or len(states) == 0:
-        raise ValueError(
-            "Run simulating_a_cube or runga_kutta_method first, "
-            "or provide states explicitly."
-        )
-
-    for name, value in (("stride", stride), ("trail_stride", trail_stride)):
-        if not isinstance(value, (int, np.integer)) or value < 1:
-            raise ValueError(f"{name} must be a positive integer.")
-
-    if not np.isfinite(duration) or duration <= 0:
-        raise ValueError("duration must be positive and finite.")
-
-    if not np.isfinite(body_opacity) or not 0 <= body_opacity <= 1:
-        raise ValueError("body_opacity must lie between zero and one.")
-
-    II = np.asarray(parameters["II"], dtype=float)
-    if II.shape != (3, 3) or not np.all(np.isfinite(II)):
-        raise ValueError("parameters['II'] must be a finite 3x3 matrix.")
-    if not np.allclose(II, II.T, rtol=1e-10, atol=1e-12):
-        raise ValueError("The inertia tensor must be symmetric.")
-    if np.any(np.linalg.eigvalsh(II) <= 0):
-        raise ValueError("The inertia tensor must be positive definite.")
-
-    vertices_body = np.asarray(
-        self.cube_vertices(cubeDimensions), dtype=float
-    )
-    if (
-        vertices_body.shape != (3, 8)
-        or not np.all(np.isfinite(vertices_body))
+    def animated_cube_with_momentum(
+        self,
+        cubeDimensions,
+        parameters,
+        figTitle="Rigid-body motion",
+        *,
+        states=None,
+        duration=20,
+        stride=2,
+        show_trails=True,
+        trail_stride=20,
+        arrow_length=None,
+        angular_velocity_arrow_length=None,
+        body_opacity=1.0,
+        show_body_frame=True,
+        width=1100,
+        height=650,
+        show=True,
     ):
-        raise ValueError("cube_vertices must return a finite (3, 8) array.")
-
-    dimensions = np.ptp(vertices_body, axis=1)
-    if np.any(dimensions <= 0):
-        raise ValueError("All block dimensions must be positive.")
-
-    block_size = float(np.max(dimensions))
-
-    if arrow_length is None:
-        arrow_length = 1.5 * block_size
-    if angular_velocity_arrow_length is None:
-        angular_velocity_arrow_length = 1.15 * block_size
-
-    for name, value in (
-        ("arrow_length", arrow_length),
-        ("angular_velocity_arrow_length", angular_velocity_arrow_length),
-    ):
-        if not np.isfinite(value) or value <= 0:
-            raise ValueError(f"{name} must be positive and finite.")
-
-    # ------------------------------------------------------------
-    # Reconstruct histories
-    # ------------------------------------------------------------
-    rotations, origins, velocities = [], [], []
-
-    for X in states:
-        R = np.asarray(X[0][0], dtype=float).reshape(3, 3)
-        o = np.asarray(X[0][1], dtype=float).reshape(3)
-        omega = np.asarray(X[1], dtype=float).reshape(3)
-
-        if not all(np.all(np.isfinite(a)) for a in (R, o, omega)):
-            raise ValueError("The state history contains nonfinite values.")
-
-        rotations.append(R)
-        origins.append(o)
-        velocities.append(omega)
-
-    rotations = np.asarray(rotations)
-    origins = np.asarray(origins)
-    omega_history = np.asarray(velocities)
-
-    Omega_history = np.einsum("nji,nj->ni", rotations, omega_history)
-    Pi_history = Omega_history @ II.T
-    pi_history = np.einsum("nij,nj->ni", rotations, Pi_history)
-
-    def maximum_norm(*histories):
-        return max(
-            float(np.max(np.linalg.norm(a, axis=1)))
-            for a in histories
-        )
-
-    hmax = maximum_norm(pi_history, Pi_history)
-    wmax = maximum_norm(omega_history, Omega_history)
-
-    momentum_scale = arrow_length / hmax if hmax > 0 else 0.0
-    velocity_scale = (
-        angular_velocity_arrow_length / wmax if wmax > 0 else 0.0
-    )
-
-    zero_origins = np.zeros_like(origins)
-
-    specifications = [
-        dict(
-            key="pi", label="π", name="π — spatial momentum",
-            scene="scene", origins=origins,
-            values=pi_history, scale=momentum_scale,
-            units="kg·m²/s", color="#202020", dash="solid",
-        ),
-        dict(
-            key="omega", label="ω", name="ω — spatial angular velocity",
-            scene="scene", origins=origins,
-            values=omega_history, scale=velocity_scale,
-            units="rad/s", color="#0057B8", dash="solid",
-        ),
-        dict(
-            key="Pi", label="Π", name="Π — body momentum",
-            scene="scene2", origins=zero_origins,
-            values=Pi_history, scale=momentum_scale,
-            units="kg·m²/s", color="#C2185B", dash="dash",
-        ),
-        dict(
-            key="Omega", label="Ω", name="Ω — body angular velocity",
-            scene="scene2", origins=zero_origins,
-            values=Omega_history, scale=velocity_scale,
-            units="rad/s", color="#00875A", dash="dash",
-        ),
-    ]
-
-    for spec in specifications:
-        spec["tips"] = (
-            spec["origins"] + spec["scale"] * spec["values"]
-        )
-
-    indices = list(range(0, len(states), stride))
-    if indices[-1] != len(states) - 1:
-        indices.append(len(states) - 1)
-
-    # ------------------------------------------------------------
-    # Block appearance
-    # ------------------------------------------------------------
-    triangle_i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
-    triangle_j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
-    triangle_k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
-
-    colors = [
-        "#339AF0",  # Blue   — −b₂
-        "#F06595",  # Pink   — −b₃
-        "#845EF7",  # Violet — +b₃
-        "#FCC419",  # Yellow — +b₂
-        "#20C997",  # Teal   — −b₁
-        "#FF922B",  # Orange — +b₁
-    ]
-    triangle_colors = [c for c in colors for _ in range(2)]
-
-    # Extend body axes beyond the corresponding block faces.
-    axis_negative = (
-        np.minimum(vertices_body.min(axis=1), 0.0) - 0.12 * block_size
-    )
-    axis_positive = (
-        np.maximum(vertices_body.max(axis=1), 0.0) + 0.22 * block_size
-    )
-
-    def xyz(points):
-        points = np.asarray(points)
-        return dict(x=points[:, 0], y=points[:, 1], z=points[:, 2])
-
-    # ------------------------------------------------------------
-    # Construct full initial traces or geometry-only updates
-    # ------------------------------------------------------------
-    def build_traces(index, initial=False):
-        result = []
-
-        def add(trace_type, geometry, **style):
-            # Frames never set visibility or overwrite legend styles.
-            result.append(
-                trace_type(**geometry, **(style if initial else {}))
+        """
+        Animate rigid-body motion in synchronized spatial and body views.
+    
+        Left panel:
+            The block moves in the spatial frame e.
+            Spatial angular momentum pi and angular velocity omega are shown.
+            Thin body-frame axes are attached to the moving block.
+    
+        Right panel:
+            The block remains fixed in body coordinates.
+            Body angular momentum Pi and angular velocity Omega are shown.
+    
+        Click each legend entry to toggle its arrow, label, and trail together.
+        Animation updates preserve these visibility choices.
+    
+        Uses self.trajectory unless states is supplied. No integration is
+        performed. Each state must have the form:
+            X = [[R, o], omega, p, Xc]
+        where omega is SPATIAL angular velocity.
+    
+        The quantities are reconstructed as:
+            Omega = R.T @ omega
+            Pi    = II @ Omega
+            pi    = R @ Pi
+    
+        Parameters
+        ----------
+        cubeDimensions : dict
+            Dimensions and origin offsets accepted by cube_vertices.
+        parameters : dict
+            Contains 'II', the constant body-frame inertia tensor.
+            The body origin must be the center of mass or a fixed pivot,
+            with inertia and angular momentum taken about that point.
+        figTitle : str
+            Figure title.
+        states : sequence, optional
+            State history. Defaults to self.trajectory.
+        duration : float
+            Display duration per animation frame, in milliseconds.
+        stride : int
+            Display every stride-th state, including the final state.
+        show_trails : bool
+            Include accumulated arrow-tip paths.
+        trail_stride : int
+            Retain every trail_stride-th sample in each path.
+            The current tip is always included.
+        arrow_length : float, optional
+            Display length assigned to the largest angular-momentum magnitude.
+            Defaults to 1.5 times the largest block dimension.
+        angular_velocity_arrow_length : float, optional
+            Display length assigned to the largest angular-velocity magnitude.
+            Defaults to 1.15 times the largest block dimension.
+        body_opacity : float
+            Block opacity in [0, 1].
+        show_body_frame : bool
+            Draw thin body-frame axes in both panels.
+        width, height : int
+            Figure dimensions in pixels.
+        show : bool
+            Whether to display the figure.
+    
+        Returns
+        -------
+        plotly.graph_objects.Figure
+    
+        Notes
+        -----
+        Momentum and angular velocity use separate fixed display scales.
+        Each spatial/body pair shares its scale throughout the animation.
+    
+        Spatial arrows start at o; body arrows start at the body origin.
+        Spatial tip paths include any translation of o.
+    
+        Both panels use the same coordinate scale initially. Their cameras
+        can be manipulated independently.
+    
+        Legend text and symbols have fixed pixel sizes. They do not scale
+        with the 3D cameras. Browser zoom still scales the entire page.
+    
+        Growing trails increase animation size. Increase stride and/or
+        trail_stride for long simulations.
+        """
+        import numpy as np
+        import plotly.graph_objects as go
+    
+        # ------------------------------------------------------------
+        # Validate inputs
+        # ------------------------------------------------------------
+        if states is None:
+            states = getattr(self, "trajectory", None)
+    
+        if states is None or len(states) == 0:
+            raise ValueError(
+                "Run simulating_a_cube or runga_kutta_method first, "
+                "or provide states explicitly."
             )
-
-        for scene in ("scene", "scene2"):
-            if scene == "scene":
-                R = rotations[index]
-                o = origins[index]
-                vertices = o[:, None] + R @ vertices_body
-            else:
-                R = np.eye(3)
-                o = np.zeros(3)
-                vertices = vertices_body
-
-            add(
-                go.Mesh3d,
-                xyz(vertices.T),
-                scene=scene,
-                i=triangle_i, j=triangle_j, k=triangle_k,
-                facecolor=triangle_colors,
-                flatshading=True,
-                opacity=body_opacity,
-                lighting=dict(
-                    ambient=0.7, diffuse=0.7,
-                    specular=0.1, roughness=0.9,
-                ),
-                name="Block",
-                showlegend=False,
-                hoverinfo="skip",
+    
+        for name, value in (("stride", stride), ("trail_stride", trail_stride)):
+            if not isinstance(value, (int, np.integer)) or value < 1:
+                raise ValueError(f"{name} must be a positive integer.")
+    
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError("duration must be positive and finite.")
+    
+        if not np.isfinite(body_opacity) or not 0 <= body_opacity <= 1:
+            raise ValueError("body_opacity must lie between zero and one.")
+    
+        II = np.asarray(parameters["II"], dtype=float)
+        if II.shape != (3, 3) or not np.all(np.isfinite(II)):
+            raise ValueError("parameters['II'] must be a finite 3x3 matrix.")
+        if not np.allclose(II, II.T, rtol=1e-10, atol=1e-12):
+            raise ValueError("The inertia tensor must be symmetric.")
+        if np.any(np.linalg.eigvalsh(II) <= 0):
+            raise ValueError("The inertia tensor must be positive definite.")
+    
+        vertices_body = np.asarray(
+            self.cube_vertices(cubeDimensions), dtype=float
+        )
+        if (
+            vertices_body.shape != (3, 8)
+            or not np.all(np.isfinite(vertices_body))
+        ):
+            raise ValueError("cube_vertices must return a finite (3, 8) array.")
+    
+        dimensions = np.ptp(vertices_body, axis=1)
+        if np.any(dimensions <= 0):
+            raise ValueError("All block dimensions must be positive.")
+    
+        block_size = float(np.max(dimensions))
+    
+        if arrow_length is None:
+            arrow_length = 1.5 * block_size
+        if angular_velocity_arrow_length is None:
+            angular_velocity_arrow_length = 1.15 * block_size
+    
+        for name, value in (
+            ("arrow_length", arrow_length),
+            ("angular_velocity_arrow_length", angular_velocity_arrow_length),
+        ):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive and finite.")
+    
+        # ------------------------------------------------------------
+        # Reconstruct histories
+        # ------------------------------------------------------------
+        rotations, origins, velocities = [], [], []
+    
+        for X in states:
+            R = np.asarray(X[0][0], dtype=float).reshape(3, 3)
+            o = np.asarray(X[0][1], dtype=float).reshape(3)
+            omega = np.asarray(X[1], dtype=float).reshape(3)
+    
+            if not all(np.all(np.isfinite(a)) for a in (R, o, omega)):
+                raise ValueError("The state history contains nonfinite values.")
+    
+            rotations.append(R)
+            origins.append(o)
+            velocities.append(omega)
+    
+        rotations = np.asarray(rotations)
+        origins = np.asarray(origins)
+        omega_history = np.asarray(velocities)
+    
+        Omega_history = np.einsum("nji,nj->ni", rotations, omega_history)
+        Pi_history = Omega_history @ II.T
+        pi_history = np.einsum("nij,nj->ni", rotations, Pi_history)
+    
+        def maximum_norm(*histories):
+            return max(
+                float(np.max(np.linalg.norm(a, axis=1)))
+                for a in histories
             )
-
-            if show_body_frame:
-                for j in range(3):
-                    # Thin outlined axes with open arrowheads.
-                    direction = R[:, j]
-                    perpendicular = R[:, (j + 1) % 3]
-                    start = o + axis_negative[j] * direction
-                    tip = o + axis_positive[j] * direction
-
-                    head_length = 0.08 * block_size
-                    wing1 = (
-                        tip - head_length * direction
-                        + 0.4 * head_length * perpendicular
-                    )
-                    wing2 = (
-                        tip - head_length * direction
-                        - 0.4 * head_length * perpendicular
-                    )
-
-                    points = np.vstack([
-                        start, tip,
-                        [np.nan, np.nan, np.nan],
-                        wing1, tip, wing2,
-                    ])
-
-                    add(
-                        go.Scatter3d,
-                        xyz(points),
-                        scene=scene,
-                        mode="lines",
-                        line=dict(color="#555555", width=2),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    )
-
-                    label_position = tip + 0.06 * block_size * direction
-                    add(
-                        go.Scatter3d,
-                        dict(
-                            **xyz(label_position[None, :]),
-                            text=[("b₁", "b₂", "b₃")[j]],
-                        ),
-                        scene=scene,
-                        mode="text",
-                        textfont=dict(size=13, color="#444444"),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    )
-
+    
+        hmax = maximum_norm(pi_history, Pi_history)
+        wmax = maximum_norm(omega_history, Omega_history)
+    
+        momentum_scale = arrow_length / hmax if hmax > 0 else 0.0
+        velocity_scale = (
+            angular_velocity_arrow_length / wmax if wmax > 0 else 0.0
+        )
+    
+        zero_origins = np.zeros_like(origins)
+    
+        specifications = [
+            dict(
+                key="pi", label="π", name="π — spatial momentum",
+                scene="scene", origins=origins,
+                values=pi_history, scale=momentum_scale,
+                units="kg·m²/s", color="#202020", dash="solid",
+            ),
+            dict(
+                key="omega", label="ω", name="ω — spatial angular velocity",
+                scene="scene", origins=origins,
+                values=omega_history, scale=velocity_scale,
+                units="rad/s", color="#0057B8", dash="solid",
+            ),
+            dict(
+                key="Pi", label="Π", name="Π — body momentum",
+                scene="scene2", origins=zero_origins,
+                values=Pi_history, scale=momentum_scale,
+                units="kg·m²/s", color="#C2185B", dash="dash",
+            ),
+            dict(
+                key="Omega", label="Ω", name="Ω — body angular velocity",
+                scene="scene2", origins=zero_origins,
+                values=Omega_history, scale=velocity_scale,
+                units="rad/s", color="#00875A", dash="dash",
+            ),
+        ]
+    
         for spec in specifications:
-            origin = spec["origins"][index]
-            value = spec["values"][index]
-            displacement = spec["scale"] * value
-            magnitude = float(np.linalg.norm(value))
-
-            tip = origin + displacement
-            head_base = origin + 0.82 * displacement
-            head = tip - head_base
-            head_length = float(np.linalg.norm(head))
-
-            common = dict(
-                scene=spec["scene"],
-                legendgroup=spec["key"],
+            spec["tips"] = (
+                spec["origins"] + spec["scale"] * spec["values"]
             )
-
-            add(
-                go.Scatter3d,
-                dict(
-                    **xyz(np.vstack([origin, head_base])),
-                    hovertemplate=(
-                        f"{spec['name']}<br>"
-                        f"Components: [{value[0]:.4g}, "
-                        f"{value[1]:.4g}, {value[2]:.4g}]<br>"
-                        f"Magnitude: {magnitude:.5g} {spec['units']}"
-                        "<extra></extra>"
+    
+        indices = list(range(0, len(states), stride))
+        if indices[-1] != len(states) - 1:
+            indices.append(len(states) - 1)
+    
+        # ------------------------------------------------------------
+        # Block appearance
+        # ------------------------------------------------------------
+        triangle_i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
+        triangle_j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
+        triangle_k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
+    
+        colors = [
+            "#339AF0",  # Blue   — −b₂
+            "#F06595",  # Pink   — −b₃
+            "#845EF7",  # Violet — +b₃
+            "#FCC419",  # Yellow — +b₂
+            "#20C997",  # Teal   — −b₁
+            "#FF922B",  # Orange — +b₁
+        ]
+        triangle_colors = [c for c in colors for _ in range(2)]
+    
+        # Extend body axes beyond the corresponding block faces.
+        axis_negative = (
+            np.minimum(vertices_body.min(axis=1), 0.0) - 0.12 * block_size
+        )
+        axis_positive = (
+            np.maximum(vertices_body.max(axis=1), 0.0) + 0.22 * block_size
+        )
+    
+        def xyz(points):
+            points = np.asarray(points)
+            return dict(x=points[:, 0], y=points[:, 1], z=points[:, 2])
+    
+        # ------------------------------------------------------------
+        # Construct full initial traces or geometry-only updates
+        # ------------------------------------------------------------
+        def build_traces(index, initial=False):
+            result = []
+    
+            def add(trace_type, geometry, **style):
+                # Frames never set visibility or overwrite legend styles.
+                result.append(
+                    trace_type(**geometry, **(style if initial else {}))
+                )
+    
+            for scene in ("scene", "scene2"):
+                if scene == "scene":
+                    R = rotations[index]
+                    o = origins[index]
+                    vertices = o[:, None] + R @ vertices_body
+                else:
+                    R = np.eye(3)
+                    o = np.zeros(3)
+                    vertices = vertices_body
+    
+                add(
+                    go.Mesh3d,
+                    xyz(vertices.T),
+                    scene=scene,
+                    i=triangle_i, j=triangle_j, k=triangle_k,
+                    facecolor=triangle_colors,
+                    flatshading=True,
+                    opacity=body_opacity,
+                    lighting=dict(
+                        ambient=0.7, diffuse=0.7,
+                        specular=0.1, roughness=0.9,
                     ),
-                ),
-                **common,
-                mode="lines",
-                line=dict(
-                    color=spec["color"], width=7, dash=spec["dash"]
-                ),
-                name=spec["name"],
-                showlegend=True,
-            )
-
-            if head_length > 0:
-                direction = head / head_length
-                cone_geometry = dict(
-                    **xyz(tip[None, :]),
-                    u=[direction[0]],
-                    v=[direction[1]],
-                    w=[direction[2]],
-                    sizeref=head_length,
+                    name="Block",
+                    showlegend=False,
+                    hoverinfo="skip",
                 )
-            else:
-                cone_geometry = dict(
-                    x=[], y=[], z=[], u=[], v=[], w=[], sizeref=1.0
+    
+                if show_body_frame:
+                    for j in range(3):
+                        # Thin outlined axes with open arrowheads.
+                        direction = R[:, j]
+                        perpendicular = R[:, (j + 1) % 3]
+                        start = o + axis_negative[j] * direction
+                        tip = o + axis_positive[j] * direction
+    
+                        head_length = 0.08 * block_size
+                        wing1 = (
+                            tip - head_length * direction
+                            + 0.4 * head_length * perpendicular
+                        )
+                        wing2 = (
+                            tip - head_length * direction
+                            - 0.4 * head_length * perpendicular
+                        )
+    
+                        points = np.vstack([
+                            start, tip,
+                            [np.nan, np.nan, np.nan],
+                            wing1, tip, wing2,
+                        ])
+    
+                        add(
+                            go.Scatter3d,
+                            xyz(points),
+                            scene=scene,
+                            mode="lines",
+                            line=dict(color="#555555", width=2),
+                            showlegend=False,
+                            hoverinfo="skip",
+                        )
+    
+                        label_position = tip + 0.06 * block_size * direction
+                        add(
+                            go.Scatter3d,
+                            dict(
+                                **xyz(label_position[None, :]),
+                                text=[("b₁", "b₂", "b₃")[j]],
+                            ),
+                            scene=scene,
+                            mode="text",
+                            textfont=dict(size=13, color="#444444"),
+                            showlegend=False,
+                            hoverinfo="skip",
+                        )
+    
+            for spec in specifications:
+                origin = spec["origins"][index]
+                value = spec["values"][index]
+                displacement = spec["scale"] * value
+                magnitude = float(np.linalg.norm(value))
+    
+                tip = origin + displacement
+                head_base = origin + 0.82 * displacement
+                head = tip - head_base
+                head_length = float(np.linalg.norm(head))
+    
+                common = dict(
+                    scene=spec["scene"],
+                    legendgroup=spec["key"],
                 )
-
-            add(
-                go.Cone,
-                cone_geometry,
-                **common,
-                anchor="tip",
-                sizemode="absolute",
-                colorscale=[
-                    [0, spec["color"]], [1, spec["color"]]
-                ],
-                showscale=False,
-                showlegend=False,
-                hoverinfo="skip",
-            )
-
-            label_position = origin + 1.07 * displacement
-            add(
-                go.Scatter3d,
-                dict(
-                    **xyz(label_position[None, :]),
-                    text=[spec["label"] if magnitude > 0 else ""],
-                ),
-                **common,
-                mode="text",
-                textfont=dict(
-                    color=spec["color"],
-                    size=18,
-                    family="DejaVu Sans, Arial, sans-serif",
-                ),
-                showlegend=False,
-                hoverinfo="skip",
-            )
-
-            if show_trails:
-                samples = np.arange(0, index + 1, trail_stride)
-                if samples[-1] != index:
-                    samples = np.append(samples, index)
-
+    
                 add(
                     go.Scatter3d,
-                    xyz(spec["tips"][samples]),
+                    dict(
+                        **xyz(np.vstack([origin, head_base])),
+                        hovertemplate=(
+                            f"{spec['name']}<br>"
+                            f"Components: [{value[0]:.4g}, "
+                            f"{value[1]:.4g}, {value[2]:.4g}]<br>"
+                            f"Magnitude: {magnitude:.5g} {spec['units']}"
+                            "<extra></extra>"
+                        ),
+                    ),
                     **common,
                     mode="lines",
                     line=dict(
-                        color=spec["color"], width=3, dash=spec["dash"]
+                        color=spec["color"], width=7, dash=spec["dash"]
+                    ),
+                    name=spec["name"],
+                    showlegend=True,
+                )
+    
+                if head_length > 0:
+                    direction = head / head_length
+                    cone_geometry = dict(
+                        **xyz(tip[None, :]),
+                        u=[direction[0]],
+                        v=[direction[1]],
+                        w=[direction[2]],
+                        sizeref=head_length,
+                    )
+                else:
+                    cone_geometry = dict(
+                        x=[], y=[], z=[], u=[], v=[], w=[], sizeref=1.0
+                    )
+    
+                add(
+                    go.Cone,
+                    cone_geometry,
+                    **common,
+                    anchor="tip",
+                    sizemode="absolute",
+                    colorscale=[
+                        [0, spec["color"]], [1, spec["color"]]
+                    ],
+                    showscale=False,
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+    
+                label_position = origin + 1.07 * displacement
+                add(
+                    go.Scatter3d,
+                    dict(
+                        **xyz(label_position[None, :]),
+                        text=[spec["label"] if magnitude > 0 else ""],
+                    ),
+                    **common,
+                    mode="text",
+                    textfont=dict(
+                        color=spec["color"],
+                        size=18,
+                        family="DejaVu Sans, Arial, sans-serif",
                     ),
                     showlegend=False,
                     hoverinfo="skip",
                 )
-
-        return result
-
-    initial_traces = build_traces(0, initial=True)
-
-    fig = go.Figure(
-        data=initial_traces,
-        frames=[
-            go.Frame(
-                name=str(index),
-                data=build_traces(index),
-                traces=list(range(len(initial_traces))),
-            )
-            for index in indices
-        ],
-    )
-
-    # ------------------------------------------------------------
-    # Fixed ranges, with matching scale in both panels
-    # ------------------------------------------------------------
-    bounds = {
-        "scene": [origins],
-        "scene2": [vertices_body.T, np.zeros((1, 3))],
-    }
-
-    for spec in specifications:
-        bounds[spec["scene"]].extend([
-            spec["tips"],
-            spec["origins"] + 1.12 * spec["scale"] * spec["values"],
-        ])
-
-    local_axis_points = []
-    if show_body_frame:
-        for j in range(3):
-            unit = np.eye(3)[:, j]
-            local_axis_points.extend([
-                axis_negative[j] * unit,
-                (axis_positive[j] + 0.06 * block_size) * unit,
-            ])
-        local_axis_points = np.asarray(local_axis_points)
-        bounds["scene2"].append(local_axis_points)
-
-    for index in indices:
-        R, o = rotations[index], origins[index]
-        bounds["scene"].append((o[:, None] + R @ vertices_body).T)
-
-        if show_body_frame:
-            bounds["scene"].append(
-                o + local_axis_points @ R.T
-            )
-
-    centers = {}
-    half_width = 0.58 * block_size
-
-    for scene, sets in bounds.items():
-        points = np.concatenate(sets, axis=0)
-        lower, upper = points.min(axis=0), points.max(axis=0)
-        centers[scene] = 0.5 * (lower + upper)
-        half_width = max(
-            half_width, 0.58 * float(np.max(upper - lower))
-        )
-
-    def scene_layout(scene, domain, labels):
-        center = centers[scene]
-        return dict(
-            domain=dict(x=domain, y=[0, 1]),
-            **{
-                axis: dict(
-                    title=label,
-                    range=[
-                        center[j] - half_width,
-                        center[j] + half_width,
-                    ],
-                    autorange=False,
+    
+                if show_trails:
+                    samples = np.arange(0, index + 1, trail_stride)
+                    if samples[-1] != index:
+                        samples = np.append(samples, index)
+    
+                    add(
+                        go.Scatter3d,
+                        xyz(spec["tips"][samples]),
+                        **common,
+                        mode="lines",
+                        line=dict(
+                            color=spec["color"], width=3, dash=spec["dash"]
+                        ),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
+    
+            return result
+    
+        initial_traces = build_traces(0, initial=True)
+    
+        fig = go.Figure(
+            data=initial_traces,
+            frames=[
+                go.Frame(
+                    name=str(index),
+                    data=build_traces(index),
+                    traces=list(range(len(initial_traces))),
                 )
-                for j, (axis, label) in enumerate(zip(
-                    ("xaxis", "yaxis", "zaxis"), labels
-                ))
-            },
-            aspectmode="cube",
-            camera=dict(eye=dict(x=1.6, y=1.6, z=1.1)),
-            uirevision=f"keep-{scene}-camera",
+                for index in indices
+            ],
         )
-
-    # ------------------------------------------------------------
-    # Fixed-size legend and playback controls outside the scenes
-    # ------------------------------------------------------------
-    fig.update_layout(
-        title=dict(text=figTitle, x=0.5),
-        width=width,
-        height=height,
-        autosize=False,
-        scene=scene_layout(
-            "scene", [0.0, 0.48], ("e₁", "e₂", "e₃")
-        ),
-        scene2=scene_layout(
-            "scene2", [0.52, 1.0], ("b₁", "b₂", "b₃")
-        ),
-        font=dict(
-            family="DejaVu Sans, Arial, sans-serif",
-            size=13,
-        ),
-        annotations=[
-            dict(
-                text="Spatial frame e",
-                x=0.24, y=1.04,
-                xref="paper", yref="paper",
-                showarrow=False,
-                xanchor="center",
-                font=dict(size=16),
+    
+        # ------------------------------------------------------------
+        # Fixed ranges, with matching scale in both panels
+        # ------------------------------------------------------------
+        bounds = {
+            "scene": [origins],
+            "scene2": [vertices_body.T, np.zeros((1, 3))],
+        }
+    
+        for spec in specifications:
+            bounds[spec["scene"]].extend([
+                spec["tips"],
+                spec["origins"] + 1.12 * spec["scale"] * spec["values"],
+            ])
+    
+        local_axis_points = []
+        if show_body_frame:
+            for j in range(3):
+                unit = np.eye(3)[:, j]
+                local_axis_points.extend([
+                    axis_negative[j] * unit,
+                    (axis_positive[j] + 0.06 * block_size) * unit,
+                ])
+            local_axis_points = np.asarray(local_axis_points)
+            bounds["scene2"].append(local_axis_points)
+    
+        for index in indices:
+            R, o = rotations[index], origins[index]
+            bounds["scene"].append((o[:, None] + R @ vertices_body).T)
+    
+            if show_body_frame:
+                bounds["scene"].append(
+                    o + local_axis_points @ R.T
+                )
+    
+        centers = {}
+        half_width = 0.58 * block_size
+    
+        for scene, sets in bounds.items():
+            points = np.concatenate(sets, axis=0)
+            lower, upper = points.min(axis=0), points.max(axis=0)
+            centers[scene] = 0.5 * (lower + upper)
+            half_width = max(
+                half_width, 0.58 * float(np.max(upper - lower))
+            )
+    
+        def scene_layout(scene, domain, labels):
+            center = centers[scene]
+            return dict(
+                domain=dict(x=domain, y=[0, 1]),
+                **{
+                    axis: dict(
+                        title=label,
+                        range=[
+                            center[j] - half_width,
+                            center[j] + half_width,
+                        ],
+                        autorange=False,
+                    )
+                    for j, (axis, label) in enumerate(zip(
+                        ("xaxis", "yaxis", "zaxis"), labels
+                    ))
+                },
+                aspectmode="cube",
+                camera=dict(eye=dict(x=1.6, y=1.6, z=1.1)),
+                uirevision=f"keep-{scene}-camera",
+            )
+    
+        # ------------------------------------------------------------
+        # Fixed-size legend and playback controls outside the scenes
+        # ------------------------------------------------------------
+        fig.update_layout(
+            title=dict(text=figTitle, x=0.5),
+            width=width,
+            height=height,
+            autosize=False,
+            scene=scene_layout(
+                "scene", [0.0, 0.48], ("e₁", "e₂", "e₃")
             ),
-            dict(
-                text="Body frame b",
-                x=0.76, y=1.04,
-                xref="paper", yref="paper",
-                showarrow=False,
-                xanchor="center",
-                font=dict(size=16),
+            scene2=scene_layout(
+                "scene2", [0.52, 1.0], ("b₁", "b₂", "b₃")
             ),
-        ],
-        legend=dict(
-            title=dict(text="Click to show/hide"),
-            orientation="h",
-            x=0.5,
-            xanchor="center",
-            y=-0.08,
-            yanchor="top",
-            font=dict(size=13),
-            itemsizing="constant",
-            groupclick="togglegroup",
-            itemclick="toggle",
-            itemdoubleclick=False,
-            uirevision="keep-visibility",
-        ),
-        margin=dict(l=20, r=20, t=100, b=150, autoexpand=False),
-        updatemenus=[dict(
-            type="buttons",
-            direction="left",
-            x=0.5,
-            xanchor="center",
-            y=-0.25,
-            yanchor="top",
-            font=dict(size=13),
-            buttons=[
+            font=dict(
+                family="DejaVu Sans, Arial, sans-serif",
+                size=13,
+            ),
+            annotations=[
                 dict(
-                    label="Play",
-                    method="animate",
-                    args=[None, {
-                        "frame": {"duration": duration, "redraw": True},
-                        "transition": {"duration": 0},
-                        "fromcurrent": True,
-                        "mode": "immediate",
-                    }],
+                    text="Spatial frame e",
+                    x=0.24, y=1.04,
+                    xref="paper", yref="paper",
+                    showarrow=False,
+                    xanchor="center",
+                    font=dict(size=16),
                 ),
                 dict(
-                    label="Pause",
-                    method="animate",
-                    args=[[None], {
-                        "frame": {"duration": 0, "redraw": False},
-                        "transition": {"duration": 0},
-                        "mode": "immediate",
-                    }],
-                ),
-                dict(
-                    label="Reset",
-                    method="animate",
-                    args=[["0"], {
-                        "frame": {"duration": 0, "redraw": True},
-                        "transition": {"duration": 0},
-                        "mode": "immediate",
-                    }],
+                    text="Body frame b",
+                    x=0.76, y=1.04,
+                    xref="paper", yref="paper",
+                    showarrow=False,
+                    xanchor="center",
+                    font=dict(size=16),
                 ),
             ],
-        )],
-    )
-
-    if show:
-        fig.show(config={"responsive": False, "scrollZoom": True})
-
-    return fig
+            legend=dict(
+                title=dict(text="Click to show/hide"),
+                orientation="h",
+                x=0.5,
+                xanchor="center",
+                y=-0.08,
+                yanchor="top",
+                font=dict(size=13),
+                itemsizing="constant",
+                groupclick="togglegroup",
+                itemclick="toggle",
+                itemdoubleclick=False,
+                uirevision="keep-visibility",
+            ),
+            margin=dict(l=20, r=20, t=100, b=150, autoexpand=False),
+            updatemenus=[dict(
+                type="buttons",
+                direction="left",
+                x=0.5,
+                xanchor="center",
+                y=-0.25,
+                yanchor="top",
+                font=dict(size=13),
+                buttons=[
+                    dict(
+                        label="Play",
+                        method="animate",
+                        args=[None, {
+                            "frame": {"duration": duration, "redraw": True},
+                            "transition": {"duration": 0},
+                            "fromcurrent": True,
+                            "mode": "immediate",
+                        }],
+                    ),
+                    dict(
+                        label="Pause",
+                        method="animate",
+                        args=[[None], {
+                            "frame": {"duration": 0, "redraw": False},
+                            "transition": {"duration": 0},
+                            "mode": "immediate",
+                        }],
+                    ),
+                    dict(
+                        label="Reset",
+                        method="animate",
+                        args=[["0"], {
+                            "frame": {"duration": 0, "redraw": True},
+                            "transition": {"duration": 0},
+                            "mode": "immediate",
+                        }],
+                    ),
+                ],
+            )],
+        )
+    
+        if show:
+            fig.show(config={"responsive": False, "scrollZoom": True})
+    
+        return fig
 
     
     def eulers_method(self, dt, Tmax, parameters, ICs):
