@@ -2415,6 +2415,397 @@ class RigidBodySim:
         }
         return fig, info
 
+    def plot_momentum_sphere(
+        self,
+        inertia=(3.0, 2.0, 1.0),
+        h=1.0,
+        curves_per_family=4,
+        samples=500,
+        show_arrows=True,
+        sphere_opacity=0.85,
+        perspective=True,
+        sphere_inset=0.005,
+        width=850,
+        height=850,
+        show=True,
+    ):
+        """
+        Plot free rigid-body angular momentum curves on a fixed sphere.
+    
+        Parameters
+        ----------
+        inertia : length-3 sequence
+            Principal moments, ordered I1 > I2 > I3 > 0.
+        h : float
+            Conserved angular momentum magnitude.
+        curves_per_family : int
+            Number of regular energy levels on each side of Ecrit.
+            Each energy level produces two closed curves.
+        samples : int
+            Number of samples per closed curve.
+        show_arrows : bool
+            Show the direction of motion, Pi_dot = Pi x I^{-1} Pi.
+        sphere_opacity : float, default 0.85
+            Sphere opacity between 0 and 1:
+            0 = transparent; 1 = opaque, hiding rear curves.
+            Intermediate values allow rear curves to remain visible.
+        perspective : bool
+            True for perspective projection; False for orthographic.
+        sphere_inset : float, default 0.005
+            Fractional reduction of the rendered sphere radius to reduce
+            overlap artifacts. Curves remain on the exact sphere |Pi| = h.
+            This is a visual adjustment only.
+        width, height : int
+            Figure dimensions in pixels.
+        show : bool
+            Display the figure.
+    
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure
+            Interactive figure with an opacity slider.
+    
+        Notes
+        -----
+        The curves are exact parametrizations of the conserved-surface
+        intersections, sampled for plotting. Their parameter is not time;
+        arrows are calculated from Euler's equations.
+    
+        Plotly's transparent 3D rendering may produce minor depth-sorting
+        artifacts. Rear curves are not explicitly dashed.
+        """
+        I = np.asarray(inertia, dtype=float)
+    
+        if I.shape != (3,) or not np.all(np.isfinite(I)):
+            raise ValueError("inertia must contain three finite moments.")
+        if not (I[0] > I[1] > I[2] > 0):
+            raise ValueError("Require I1 > I2 > I3 > 0.")
+        if not np.isfinite(h) or h <= 0:
+            raise ValueError("h must be positive.")
+        if not isinstance(curves_per_family, (int, np.integer)):
+            raise ValueError("curves_per_family must be an integer.")
+        if not isinstance(samples, (int, np.integer)):
+            raise ValueError("samples must be an integer.")
+        if curves_per_family < 1 or samples < 32:
+            raise ValueError("Use curves_per_family >= 1 and samples >= 32.")
+        if not 0 <= sphere_opacity <= 1:
+            raise ValueError("sphere_opacity must lie between 0 and 1.")
+        if not 0 <= sphere_inset < 0.05:
+            raise ValueError("Use 0 <= sphere_inset < 0.05.")
+    
+        invI = 1.0 / I
+        Emin = h**2 / (2.0 * I[0])
+        Ecrit = h**2 / (2.0 * I[1])
+        Emax = h**2 / (2.0 * I[2])
+    
+        fig = go.Figure()
+    
+        # Slightly inset the rendered sphere to avoid overlap artifacts.
+        polar = np.linspace(0.0, np.pi, 100)
+        azimuth = np.linspace(0.0, 2.0 * np.pi, 200)
+        p, a = np.meshgrid(polar, azimuth, indexing="ij")
+        radius = (1.0 - sphere_inset) * h
+    
+        # Keep this as trace 0: the opacity slider targets it.
+        fig.add_trace(go.Surface(
+            x=radius * np.sin(p) * np.cos(a),
+            y=radius * np.sin(p) * np.sin(a),
+            z=radius * np.cos(p),
+            surfacecolor=np.zeros_like(p),
+            colorscale=[[0, "#DCE3EA"], [1, "#DCE3EA"]],
+            showscale=False,
+            opacity=sphere_opacity,
+            hoverinfo="skip",
+            showlegend=False,
+            name="Angular momentum sphere",
+            lighting=dict(
+                ambient=0.65,
+                diffuse=0.75,
+                specular=0.08,
+                roughness=0.9,
+            ),
+            lightposition=dict(x=100, y=150, z=200),
+        ))
+    
+        def add_direction_arrow(P, color, group, index):
+            """Draw an arrow tangent to the Euler vector field."""
+            point = P[index]
+            velocity = np.cross(point, invI * point)
+            speed = np.linalg.norm(velocity)
+    
+            if speed <= 1e-12 * h**2 * np.max(invI):
+                return
+    
+            tangent = velocity / speed
+    
+            fig.add_trace(go.Cone(
+                x=[point[0]],
+                y=[point[1]],
+                z=[point[2]],
+                u=[tangent[0]],
+                v=[tangent[1]],
+                w=[tangent[2]],
+                anchor="center",
+                sizemode="absolute",
+                sizeref=0.07 * h,
+                colorscale=[[0, color], [1, color]],
+                showscale=False,
+                showlegend=False,
+                legendgroup=group,
+                hoverinfo="skip",
+            ))
+    
+        def add_curve(
+            P, color, name, group, energy,
+            legend=False, line_width=3, arrows=2,
+        ):
+            fig.add_trace(go.Scatter3d(
+                x=P[:, 0],
+                y=P[:, 1],
+                z=P[:, 2],
+                mode="lines",
+                line=dict(color=color, width=line_width),
+                name=name,
+                legendgroup=group,
+                showlegend=legend,
+                hovertemplate=(
+                    f"E = {energy:.5g}<br>"
+                    "Π₁ = %{x:.4g}<br>"
+                    "Π₂ = %{y:.4g}<br>"
+                    "Π₃ = %{z:.4g}<extra></extra>"
+                ),
+            ))
+    
+            if show_arrows:
+                for fraction in np.linspace(0.25, 0.75, arrows):
+                    index = int(fraction * (len(P) - 1))
+                    add_direction_arrow(P, color, group, index)
+    
+        def regular_curves(E):
+            """Return both regular intersection components."""
+            c = invI - 2.0 * E / h**2
+    
+            # Below Ecrit, Pi1 retains its sign; above Ecrit, Pi3 does.
+            isolated = 0 if E < Ecrit else 2
+            j, k = [index for index in range(3) if index != isolated]
+    
+            t = np.linspace(0.0, 2.0 * np.pi, samples)
+            P = np.zeros((samples, 3))
+            P[:, j] = np.cos(t)
+            P[:, k] = np.sin(t)
+    
+            squared = -(
+                c[j] * np.cos(t)**2 + c[k] * np.sin(t)**2
+            ) / c[isolated]
+    
+            P[:, isolated] = np.sqrt(np.maximum(squared, 0.0))
+    
+            # Normalization preserves sum_i c_i Pi_i^2 = 0.
+            P *= h / np.linalg.norm(P, axis=1, keepdims=True)
+    
+            other = P.copy()
+            other[:, isolated] *= -1.0
+            return P, other
+    
+        # Regular energy levels, excluding extrema and the separatrix.
+        fractions = np.linspace(0.08, 0.88, curves_per_family)
+    
+        families = [
+            (
+                Emin + fractions * (Ecrit - Emin),
+                "#154C79",  # Dark blue: below critical energy
+                "Emin < E < Ecrit",
+                "low",
+            ),
+            (
+                Emax - fractions * (Emax - Ecrit),
+                "#176B45",  # Dark green: above critical energy
+                "Ecrit < E < Emax",
+                "high",
+            ),
+        ]
+    
+        for energies, color, name, group in families:
+            first = True
+            for E in energies:
+                for P in regular_curves(E):
+                    add_curve(
+                        P, color, name, group, E,
+                        legend=first,
+                    )
+                    first = False
+    
+        # Separatrix: -A Pi1^2 + B Pi3^2 = 0.
+        A = invI[1] - invI[0]
+        B = invI[2] - invI[1]
+        slope = np.sqrt(A / B)
+        e2 = np.array([0.0, 1.0, 0.0])
+    
+        # Split the two great circles into four connecting branches.
+        first = True
+        for sign in (-1.0, 1.0):
+            direction = np.array([1.0, 0.0, sign * slope])
+            direction /= np.linalg.norm(direction)
+    
+            for start in (0.0, np.pi):
+                t = np.linspace(start, start + np.pi, samples // 2)
+                P = h * (
+                    np.cos(t)[:, None] * e2
+                    + np.sin(t)[:, None] * direction
+                )
+    
+                add_curve(
+                    P,
+                    color="#D1495B",
+                    name="Separatrix: E = Ecrit",
+                    group="critical",
+                    energy=Ecrit,
+                    legend=first,
+                    line_width=5,
+                    arrows=1,
+                )
+                first = False
+    
+        # Principal-axis relative equilibria.
+        stable = h * np.array([
+            [1, 0, 0], [-1, 0, 0],
+            [0, 0, 1], [0, 0, -1],
+        ])
+        unstable = h * np.array([
+            [0, 1, 0], [0, -1, 0],
+        ])
+    
+        for points, color, name in [
+            (stable, "#202020", "Stable equilibria"),
+            (unstable, "#D1495B", "Unstable equilibria"),
+        ]:
+            fig.add_trace(go.Scatter3d(
+                x=points[:, 0],
+                y=points[:, 1],
+                z=points[:, 2],
+                mode="markers",
+                marker=dict(size=5, color=color),
+                name=name,
+                hovertemplate=(
+                    "Π = (%{x:.3g}, %{y:.3g}, %{z:.3g})"
+                    "<extra>%{fullData.name}</extra>"
+                ),
+            ))
+    
+        # Coordinate axes through the sphere.
+        extent = 1.35 * h
+    
+        for index, label in enumerate(["Π₁", "Π₂", "Π₃"]):
+            direction = np.eye(3)[index]
+            endpoints = np.array([
+                -extent * direction,
+                extent * direction,
+            ])
+    
+            fig.add_trace(go.Scatter3d(
+                x=endpoints[:, 0],
+                y=endpoints[:, 1],
+                z=endpoints[:, 2],
+                mode="lines",
+                line=dict(color="#666666", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+    
+            tip = extent * direction
+            fig.add_trace(go.Cone(
+                x=[tip[0]], y=[tip[1]], z=[tip[2]],
+                u=[direction[0]],
+                v=[direction[1]],
+                w=[direction[2]],
+                anchor="tip",
+                sizemode="absolute",
+                sizeref=0.07 * h,
+                colorscale=[[0, "#333333"], [1, "#333333"]],
+                showscale=False,
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+    
+            label_point = 1.10 * tip
+            fig.add_trace(go.Scatter3d(
+                x=[label_point[0]],
+                y=[label_point[1]],
+                z=[label_point[2]],
+                mode="text",
+                text=[label],
+                textfont=dict(size=22, color="black"),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+    
+        # Interactive opacity control, including the supplied initial value.
+        opacity_values = np.unique(np.round(
+            np.append(np.linspace(0.0, 1.0, 21), sphere_opacity),
+            6,
+        ))
+        active = int(np.argmin(np.abs(opacity_values - sphere_opacity)))
+    
+        slider_steps = [
+            dict(
+                method="restyle",
+                args=[{"opacity": float(value)}, [0]],
+                label=f"{value:.2f}",
+            )
+            for value in opacity_values
+        ]
+    
+        axis = dict(
+            visible=False,
+            range=[-1.55 * h, 1.55 * h],
+            autorange=False,
+        )
+    
+        fig.update_layout(
+            title="Free rigid body: angular momentum curves",
+            width=width,
+            height=height,
+            paper_bgcolor="white",
+            margin=dict(l=10, r=10, t=65, b=170),
+            scene=dict(
+                xaxis=axis,
+                yaxis=axis,
+                zaxis=axis,
+                aspectmode="cube",
+                bgcolor="white",
+                uirevision="momentum-sphere-camera",
+                camera=dict(
+                    eye=dict(x=1.55, y=1.65, z=1.10),
+                    up=dict(x=0, y=0, z=1),
+                    projection=dict(
+                        type="perspective" if perspective else "orthographic"
+                    ),
+                ),
+            ),
+            legend=dict(
+                orientation="h",
+                x=0.5,
+                xanchor="center",
+                y=-0.03,
+                yanchor="top",
+                itemsizing="constant",
+                groupclick="togglegroup",
+            ),
+            sliders=[dict(
+                active=active,
+                steps=slider_steps,
+                x=0.15,
+                len=0.70,
+                y=-0.16,
+                currentvalue=dict(prefix="Sphere opacity: "),
+                pad=dict(t=15),
+            )],
+        )
+    
+        if show:
+            fig.show()
+    
+        return fig
 
 ######################
     
