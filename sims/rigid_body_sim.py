@@ -2807,6 +2807,337 @@ class RigidBodySim:
     
         return fig
 
+
+    def plot_energy_ellipsoid(
+        self,
+        inertia=(3.0, 2.0, 1.0),
+        E=0.5,
+        curves_per_family=1,
+        samples=600,
+        ellipsoid_opacity=0.65,
+        surface_inset=0.004,
+        show_wireframe=True,
+        perspective=True,
+        show=True,
+        show_spheres=True,
+        sphere_opacity=0.12,
+    ):
+        """
+        Plot a fixed energy ellipsoid and its intersections with
+        angular-momentum spheres of different radii.
+    
+        Require I1 > I2 > I3 > 0 and E > 0.
+    
+        Colors
+        ------
+        Dark blue  : hcrit < h < hmax
+        Dark green : hmin < h < hcrit
+        Red        : h = hcrit (separatrix)
+    
+        Sphere surfaces are omitted. An opacity slider controls the
+        ellipsoid surface. Its slight inset is a rendering adjustment;
+        intersection curves use the exact energy and momentum equations.
+    
+        Returns
+        -------
+        plotly.graph_objects.Figure
+        """
+        I = np.asarray(inertia, dtype=float)
+    
+        if I.shape != (3,) or not np.all(np.isfinite(I)):
+            raise ValueError("inertia must contain three finite moments.")
+        if not (I[0] > I[1] > I[2] > 0):
+            raise ValueError("Require I1 > I2 > I3 > 0.")
+        if not np.isfinite(E) or E <= 0:
+            raise ValueError("E must be positive.")
+        if not 0 <= ellipsoid_opacity <= 1:
+            raise ValueError("ellipsoid_opacity must lie between 0 and 1.")
+        if not 0 <= surface_inset < 0.05:
+            raise ValueError("Use 0 <= surface_inset < 0.05.")
+        if (
+            not isinstance(curves_per_family, (int, np.integer))
+            or curves_per_family < 1
+        ):
+            raise ValueError("curves_per_family must be a positive integer.")
+        if not isinstance(samples, (int, np.integer)) or samples < 32:
+            raise ValueError("samples must be an integer >= 32.")
+    
+        invI = 1.0 / I
+        axes = np.sqrt(2.0 * E * I)
+    
+        hmin, hcrit, hmax = axes[2], axes[1], axes[0]
+    
+        blue = "#154C79"
+        green = "#176B45"
+        red = "#D1495B"
+    
+        fig = go.Figure()
+    
+        # Fixed energy ellipsoid: Pi^T I^{-1} Pi = 2E.
+        polar = np.linspace(0.0, np.pi, 100)
+        azimuth = np.linspace(0.0, 2.0 * np.pi, 180)
+        p, a = np.meshgrid(polar, azimuth, indexing="ij")
+    
+        inset_axes = (1.0 - surface_inset) * axes
+    
+        # Trace 0 is controlled by the opacity slider.
+        fig.add_trace(go.Surface(
+            x=inset_axes[0] * np.sin(p) * np.cos(a),
+            y=inset_axes[1] * np.sin(p) * np.sin(a),
+            z=inset_axes[2] * np.cos(p),
+            surfacecolor=np.zeros_like(p),
+            colorscale=[[0, "#DFE5EB"], [1, "#DFE5EB"]],
+            opacity=ellipsoid_opacity,
+            showscale=False,
+            showlegend=False,
+            hoverinfo="skip",
+            lighting=dict(
+                ambient=0.7,
+                diffuse=0.6,
+                specular=0.08,
+                roughness=0.9,
+            ),
+        ))
+    
+        def add_line(P, color, width=3, name=None, group=None,
+                     legend=False, h=None):
+            fig.add_trace(go.Scatter3d(
+                x=P[:, 0],
+                y=P[:, 1],
+                z=P[:, 2],
+                mode="lines",
+                line=dict(color=color, width=width),
+                name=name,
+                legendgroup=group,
+                showlegend=legend,
+                hoverinfo="skip" if h is None else None,
+                hovertemplate=None if h is None else (
+                    f"E = {E:.5g}<br>h = {h:.5g}<br>"
+                    "Π₁ = %{x:.4g}<br>"
+                    "Π₂ = %{y:.4g}<br>"
+                    "Π₃ = %{z:.4g}<extra></extra>"
+                ),
+            ))
+    
+        # Light wireframe, slightly outside the inset surface but inside
+        # the exact ellipsoid so that colored curves stand out.
+        if show_wireframe:
+            wire_axes = (1.0 - 0.5 * surface_inset) * axes
+            t = np.linspace(0.0, 2.0 * np.pi, 250)
+    
+            for latitude in np.linspace(0.0, np.pi, 9)[1:-1]:
+                P = np.column_stack([
+                    wire_axes[0] * np.sin(latitude) * np.cos(t),
+                    wire_axes[1] * np.sin(latitude) * np.sin(t),
+                    np.full_like(t, wire_axes[2] * np.cos(latitude)),
+                ])
+                add_line(P, "#A3ABB3", width=1)
+    
+            t = np.linspace(0.0, np.pi, 200)
+            for longitude in np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False):
+                P = np.column_stack([
+                    wire_axes[0] * np.sin(t) * np.cos(longitude),
+                    wire_axes[1] * np.sin(t) * np.sin(longitude),
+                    wire_axes[2] * np.cos(t),
+                ])
+                add_line(P, "#A3ABB3", width=1)
+    
+        def intersection_curves(h):
+            """Exact intersection components for a noncritical radius."""
+            c = invI - 2.0 * E / h**2
+            isolated = 0 if h > hcrit else 2
+            j, k = [index for index in range(3) if index != isolated]
+    
+            t = np.linspace(0.0, 2.0 * np.pi, samples)
+            P = np.zeros((samples, 3))
+            P[:, j] = np.cos(t)
+            P[:, k] = np.sin(t)
+    
+            squared = -(
+                c[j] * np.cos(t)**2 + c[k] * np.sin(t)**2
+            ) / c[isolated]
+    
+            P[:, isolated] = np.sqrt(np.maximum(squared, 0.0))
+            P *= h / np.linalg.norm(P, axis=1, keepdims=True)
+    
+            other = P.copy()
+            other[:, isolated] *= -1
+            return P, other
+    
+        # Choose radii by spacing h^2 within each admissible interval.
+        fractions = (
+            np.array([0.45])
+            if curves_per_family == 1
+            else np.linspace(0.15, 0.85, curves_per_family)
+        )
+    
+        families = [
+            (
+                np.sqrt(hcrit**2 + fractions * (hmax**2 - hcrit**2)),
+                blue,
+                "h > hcrit",
+                "above",
+            ),
+            (
+                np.sqrt(hcrit**2 - fractions * (hcrit**2 - hmin**2)),
+                green,
+                "h < hcrit",
+                "below",
+            ),
+        ]
+    
+        if not 0 <= sphere_opacity <= 1:
+            raise ValueError("sphere_opacity must lie between 0 and 1.")
+    
+        if show_spheres:
+            # Display one representative sphere from each family.
+            # With curves_per_family=1, these match the two plotted radii exactly.
+            for radii, color, name, group in families:
+                radius = radii[len(radii) // 2]
+    
+                fig.add_trace(go.Surface(
+                    x=radius * np.sin(p) * np.cos(a),
+                    y=radius * np.sin(p) * np.sin(a),
+                    z=radius * np.cos(p),
+                    surfacecolor=np.zeros_like(p),
+                    colorscale=[[0, color], [1, color]],
+                    opacity=sphere_opacity,
+                    showscale=False,
+                    showlegend=False,
+                    legendgroup=group,
+                    name=f"Sphere: {name}",
+                    hoverinfo="skip",
+                    lighting=dict(
+                        ambient=0.85,
+                        diffuse=0.35,
+                        specular=0.05,
+                        roughness=0.9,
+                    ),
+                ))
+    
+    
+        for radii, color, name, group in families:
+            first = True
+            for h in radii:
+                for P in intersection_curves(h):
+                    add_line(
+                        P, color, width=5, name=name,
+                        group=group, legend=first, h=h,
+                    )
+                    first = False
+    
+        # Critical intersection: two great circles on the hcrit sphere.
+        slope = np.sqrt(
+            (invI[1] - invI[0]) / (invI[2] - invI[1])
+        )
+        e2 = np.array([0.0, 1.0, 0.0])
+        t = np.linspace(0.0, 2.0 * np.pi, samples)
+    
+        for index, sign in enumerate((-1.0, 1.0)):
+            direction = np.array([1.0, 0.0, sign * slope])
+            direction /= np.linalg.norm(direction)
+    
+            P = hcrit * (
+                np.cos(t)[:, None] * e2
+                + np.sin(t)[:, None] * direction
+            )
+            add_line(
+                P, red, width=6,
+                name="h = hcrit: separatrix",
+                group="critical",
+                legend=(index == 0),
+                h=hcrit,
+            )
+    
+        # Intermediate-axis equilibria shared by the critical curves.
+        fig.add_trace(go.Scatter3d(
+            x=[0.0, 0.0],
+            y=[hcrit, -hcrit],
+            z=[0.0, 0.0],
+            mode="markers",
+            marker=dict(size=5, color=red),
+            name="Intermediate-axis equilibria",
+            legendgroup="critical",
+            showlegend=False,
+            hovertemplate=(
+                "Intermediate-axis equilibrium<br>"
+                "Π = (%{x:.4g}, %{y:.4g}, %{z:.4g})"
+                "<extra></extra>"
+            ),
+        ))
+    
+        # Axis labels outside the ellipsoid.
+        for index, label in enumerate(["Π₁", "Π₂", "Π₃"]):
+            point = np.zeros(3)
+            point[index] = 1.15 * axes[index]
+    
+            fig.add_trace(go.Scatter3d(
+                x=[point[0]], y=[point[1]], z=[point[2]],
+                mode="text",
+                text=[label],
+                textfont=dict(size=21, color="#303030"),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+    
+        opacity_values = np.unique(np.round(
+            np.append(np.linspace(0.0, 1.0, 21), ellipsoid_opacity),
+            6,
+        ))
+    
+        fig.update_layout(
+            title="Fixed energy ellipsoid: angular momentum intersections",
+            width=900,
+            height=750,
+            paper_bgcolor="white",
+            margin=dict(l=10, r=10, t=65, b=150),
+            scene=dict(
+                xaxis=dict(visible=False, range=[-1.25 * hmax, 1.25 * hmax]),
+                yaxis=dict(visible=False, range=[-1.25 * hmax, 1.25 * hmax]),
+                zaxis=dict(visible=False, range=[-1.25 * hmax, 1.25 * hmax]),
+                aspectmode="data",
+                bgcolor="white",
+                uirevision="energy-ellipsoid-camera",
+                camera=dict(
+                    eye=dict(x=0.35, y=2.0, z=0.65),
+                    up=dict(x=0, y=0, z=1),
+                    projection=dict(
+                        type="perspective" if perspective else "orthographic"
+                    ),
+                ),
+            ),
+            legend=dict(
+                orientation="h",
+                x=0.5,
+                xanchor="center",
+                y=-0.03,
+                yanchor="top",
+                itemsizing="constant",
+                groupclick="togglegroup",
+            ),
+            sliders=[dict(
+                active=int(np.argmin(
+                    np.abs(opacity_values - ellipsoid_opacity)
+                )),
+                x=0.15,
+                len=0.70,
+                y=-0.14,
+                currentvalue=dict(prefix="Ellipsoid opacity: "),
+                steps=[
+                    dict(
+                        method="restyle",
+                        args=[{"opacity": float(value)}, [0]],
+                        label=f"{value:.2f}",
+                    )
+                    for value in opacity_values
+                ],
+            )],
+        )
+    
+        if show:
+            fig.show()
+    
+        return fig
 ######################
     
     # def runga_kutta_method(self, dt, Tmax, parameters, ICs):
